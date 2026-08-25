@@ -1,0 +1,32 @@
+{
+  "name": "continental-cloud",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A self-hosted private cloud drive for the Continental ecosystem.",
+  "type": "module",
+  "bin": {
+    "cloud": "./dist/cli.js"
+  },
+  "scripts": {
+    "dev": "npm run build && concurrently --kill-others \"tsc -p tsconfig.json --watch\" \"node --env-file-if-exists=.env --watch --enable-source-maps dist/server.js\"",
+    "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs",
+    "start": "node --env-file-if-exists=.env --enable-source-maps dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "lint": "npm run typecheck",
+    "doctor": "npm run build && node dist/cli.js doctor",
+    "scan": "npm run build && node dist/cli.js scan",
+    "cleanup": "npm run build && node dist/cli.js cleanup"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "dependencies": {
+    "sharp": "^0.35.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "concurrently": "^9.2.1",
+    "typescript": "^5.8.3"
+  }
+}

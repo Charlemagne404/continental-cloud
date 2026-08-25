@@ -1,0 +1,12 @@
+{
+  "name": "Continental Cloud",
+  "short_name": "Cloud",
+  "description": "Private storage for the Continental ecosystem.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1013",
+  "theme_color": "#0b1013",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

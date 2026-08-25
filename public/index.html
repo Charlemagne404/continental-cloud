@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0b1013">
+    <meta name="description" content="Continental's private cloud storage.">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/style.css">
+    <title>Continental Cloud</title>
+  </head>
+  <body>
+    <div class="aurora" aria-hidden="true"></div>
+    <div class="shell" id="app">
+      <aside class="sidebar" aria-label="Cloud navigation">
+        <a class="brand" href="#drive" aria-label="Continental Cloud home"><span class="brand-mark">◇</span><span>Continental<br><strong>Cloud</strong></span></a>
+        <button class="primary new-button" data-action="new">+ <span>New</span></button>
+        <nav class="nav-list">
+          <button class="nav-item active" data-view="drive"><span>◫</span> My drive</button>
+          <button class="nav-item" data-view="recent"><span>◷</span> Recent</button>
+          <button class="nav-item" data-view="favorites"><span>✦</span> Favorites</button>
+          <button class="nav-item" data-view="activity"><span>⌁</span> Activity</button>
+          <button class="nav-item" data-view="trash"><span>⌫</span> Trash</button>
+        </nav>
+        <div class="sidebar-foot">
+          <div class="storage-meter"><div class="meter-label"><span>Storage</span><span id="storage-label">—</span></div><div class="meter-track"><i id="storage-meter"></i></div></div>
+          <div class="connection"><i id="connection-dot"></i><span id="connection-label">Checking storage</span></div>
+        </div>
+      </aside>
+      <main class="workspace">
+        <header class="topbar">
+          <button class="icon-button mobile-nav" data-action="mobile-nav" aria-label="Open navigation">☰</button>
+          <div class="crumbs" id="breadcrumbs" aria-label="Breadcrumb"></div>
+          <label class="search"><span>⌕</span><input id="search" type="search" autocomplete="off" placeholder="Search your cloud"></label>
+          <button class="icon-button" data-action="theme" aria-label="Toggle appearance">◐</button>
+        </header>
+        <section class="content-head">
+          <div><p class="eyebrow" id="section-kicker">PRIVATE STORAGE</p><h1 id="section-title">My drive</h1></div>
+          <div class="head-actions">
+            <div class="selection-actions" id="selection-actions" hidden>
+              <span id="selection-count"></span>
+              <button class="quiet-button" data-action="favorite">Favorite</button>
+              <button class="quiet-button" data-action="download">Download</button>
+              <button class="quiet-button" data-action="cut">Cut</button>
+              <button class="quiet-button" data-action="copy-clipboard">Copy</button>
+              <button class="quiet-button" data-action="paste">Paste</button>
+              <button class="quiet-button" data-action="duplicate">Duplicate</button>
+              <button class="quiet-button" data-action="rename">Rename</button>
+              <button class="quiet-button" data-action="move">Move</button>
+              <button class="quiet-button" data-action="copy">Copy</button>
+              <button class="quiet-button danger" data-action="delete">Trash</button>
+            </div>
+            <button class="quiet-button" data-action="sort" id="sort-button">Name ↕</button>
+            <div class="view-switch" role="group" aria-label="View mode"><button class="icon-button active" data-action="grid" aria-label="Grid view">▦</button><button class="icon-button" data-action="list" aria-label="List view">☷</button></div>
+          </div>
+        </section>
+        <section class="dropzone" id="dropzone" aria-live="polite">
+          <div class="loading-state" id="loading"><span class="orb"></span><p>Reading the horizon…</p></div>
+          <div class="empty-state" id="empty" hidden><span class="empty-mark">△</span><h2>This space is ready</h2><p>Bring in a file, create a folder, or drop something here.</p><button class="primary" data-action="new">Add to Cloud</button></div>
+          <div class="file-grid" id="file-list" role="list" aria-label="Files"></div>
+        </section>
+        <section class="upload-dock" id="upload-dock" hidden aria-live="polite"></section>
+      </main>
+      <aside class="details-panel" id="details" aria-label="Selected file details"><div class="details-empty">Select a file to see its details.</div></aside>
+    </div>
+    <input id="file-input" type="file" multiple hidden>
+    <dialog id="new-dialog" class="cloud-dialog"><form method="dialog"><button class="dialog-close" value="cancel" aria-label="Close">×</button><p class="eyebrow">ADD TO CLOUD</p><h2>Choose a starting point</h2><button class="dialog-choice" value="folder" data-new-choice="folder"><span>▱</span><b>New folder</b><small>Organize a new space</small></button><button class="dialog-choice" value="files" data-new-choice="files"><span>↑</span><b>Upload files</b><small>From this device</small></button></form></dialog>
+    <dialog id="preview-dialog" class="preview-dialog"><button class="dialog-close" data-action="close-preview" aria-label="Close preview">×</button><div id="preview-content"></div></dialog>
+    <dialog id="auth-dialog" class="cloud-dialog auth-dialog"><form id="auth-form"><p class="eyebrow">PRIVATE ACCESS</p><h2>Unlock your cloud</h2><p>Enter the API token configured on your Continental Cloud server. It is kept only for this browser session.</p><label>Access token<input id="token-input" type="password" required autocomplete="current-password"></label><p class="form-error" id="auth-error" hidden></p><button class="primary" type="submit">Connect</button></form></dialog>
+    <div class="toast-stack" id="toasts" aria-live="polite"></div>
+    <script type="module" src="/client/app.js"></script>
+  </body>
+</html>

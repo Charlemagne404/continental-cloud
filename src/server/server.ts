@@ -1,0 +1,247 @@
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createReadStream } from 'node:fs';
+import { lstat, stat } from 'node:fs/promises';
+import { join, extname } from 'node:path';
+import { timingSafeEqual } from 'node:crypto';
+import type { CloudConfig } from '../shared/types.js';
+import { CloudError, fail } from './errors.js';
+import { FileService, isPreviewable } from './files.js';
+import { metadataPath, MetadataDatabase } from './metadata.js';
+import { Storage } from './storage.js';
+import { UploadService } from './uploads.js';
+import { streamTar } from './archive.js';
+
+type Services = { db: MetadataDatabase; files: FileService; uploads: UploadService };
+const JSON_LIMIT = 1_048_576;
+const STATIC_TYPES: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
+
+export function createCloudServer(config: CloudConfig) {
+  const storage = new Storage(config);
+  let services: Services | undefined;
+
+  async function ensureServices(): Promise<Services> {
+    await storage.requireReady();
+    if (!services) {
+      const db = new MetadataDatabase(metadataPath(config.storagePath));
+      await db.open();
+      services = { db, files: new FileService(storage, db), uploads: undefined as never };
+      services.uploads = new UploadService(services.files, config.maxUploadBytes, config.uploadChunkBytes, config.versionRetention);
+    }
+    services.db.health();
+    return services;
+  }
+
+  const server = createServer(async (request, response) => {
+    const requestId = crypto.randomUUID();
+    setSecurityHeaders(response);
+    try {
+      if (!request.url || !request.method) throw fail.badRequest('Malformed request.');
+      const url = new URL(request.url, `http://${request.headers.host ?? 'localhost'}`);
+      if (request.method === 'OPTIONS') { response.writeHead(204, corsHeaders(request, config)); response.end(); return; }
+      if (url.pathname.startsWith('/api/')) {
+        authorize(request, config);
+        if (!['GET', 'HEAD'].includes(request.method)) assertMutationOrigin(request, config);
+        if (request.method === 'POST' && url.pathname === '/api/session') {
+          // A short-lived browser session lets regular <a>, media, and image requests
+          // stream without ever putting the long-lived token in a URL.
+          response.setHeader('Set-Cookie', `cc_session=${encodeURIComponent(config.authToken!)}; Path=/; HttpOnly; SameSite=Strict${config.environment === 'production' ? '; Secure' : ''}`);
+          sendJson(response, 200, { data: { established: true } });
+          return;
+        }
+        if (request.method === 'GET' && url.pathname === '/api/health') {
+          const status = await storage.refresh();
+          let database: { ok: boolean; detail?: string } = { ok: false, detail: 'Storage is unavailable.' };
+          if (status.state === 'ready') {
+            try { database = (await ensureServices()).db.health(); }
+            catch { database = { ok: false, detail: 'Metadata database is unavailable.' }; }
+          }
+          sendJson(response, 200, { data: { app: 'continental-cloud', version: config.appVersion, state: database.ok && status.state === 'ready' ? 'ready' : 'degraded', storage: status, database, timestamp: new Date().toISOString() } });
+          return;
+        }
+        if (request.method === 'GET' && url.pathname === '/api/storage') {
+          const status = await storage.refresh(); let usedBytes: number | null = null;
+          let breakdown: { managedBytes: number; trashBytes: number; versionBytes: number } | null = null;
+          if (status.state === 'ready') { try { const db = (await ensureServices()).db; usedBytes = db.usage(); breakdown = db.storageBreakdown(); } catch { /* health endpoint retains the database failure detail */ } }
+          sendJson(response, 200, { data: { ...status, usedBytes, breakdown, warnings: status.freeBytes !== undefined && status.freeBytes < config.minFreeBytes ? ['Free space is below the configured safety reserve.'] : [] } });
+          return;
+        }
+        await handleApi(request, response, url, await ensureServices(), storage, config);
+        return;
+      }
+      await serveStatic(response, url.pathname);
+    } catch (error: unknown) {
+      const known = error instanceof CloudError ? error : undefined;
+      const status = known?.status ?? 500;
+      if (!known) console.error(`[${requestId}]`, error);
+      sendJson(response, status, { error: { code: known?.code ?? 'INTERNAL_ERROR', message: known?.message ?? 'An unexpected server error occurred.', requestId }, meta: { timestamp: new Date().toISOString() } });
+    }
+  });
+
+  return {
+    server,
+    storage,
+    async initialize(): Promise<void> {
+      const status = await storage.initialize();
+      if (status.state === 'ready') await ensureServices();
+    },
+    async close(): Promise<void> { services?.db.close(); await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); },
+  };
+}
+
+async function handleApi(request: IncomingMessage, response: ServerResponse, url: URL, services: Services, storage: Storage, config: CloudConfig): Promise<void> {
+  const { pathname } = url; const method = request.method!;
+  if (method === 'POST' && pathname === '/api/storage/reconcile') {
+    sendJson(response, 200, { data: await services.files.reconcile() }); return;
+  }
+  if (method === 'GET' && pathname === '/api/files') {
+    const path = url.searchParams.get('path') ?? '';
+    const sort = url.searchParams.get('sort') ?? 'name'; const direction = url.searchParams.get('direction') ?? 'asc';
+    sendJson(response, 200, { data: { path, items: await services.files.list(path, sort, direction) } }); return;
+  }
+  if (method === 'POST' && pathname === '/api/files/folder') {
+    const body = await readJson(request); const folder = await services.files.createFolder(body.parentPath ?? '', body.name);
+    sendJson(response, 201, { data: folder }); return;
+  }
+  if (method === 'GET' && pathname === '/api/recent') { sendJson(response, 200, { data: services.db.listRecent() }); return; }
+  if (method === 'GET' && pathname === '/api/favorites') { sendJson(response, 200, { data: services.db.listFavorites() }); return; }
+  if (method === 'GET' && pathname === '/api/search') {
+    const number = (name: string): number | undefined => { const value = url.searchParams.get(name); return value !== null && /^\d+$/.test(value) ? Number(value) : undefined; };
+    const boolean = (name: string): boolean | undefined => url.searchParams.get(name) === 'true' ? true : url.searchParams.get(name) === 'false' ? false : undefined;
+    sendJson(response, 200, { data: services.db.search(url.searchParams.get('q') ?? '', Math.min(250, number('limit') ?? 100), { extension: url.searchParams.get('extension') ?? undefined, type: url.searchParams.get('type') ?? undefined, favorite: boolean('favorite'), trashed: boolean('trash'), minSize: number('minSize'), maxSize: number('maxSize'), before: url.searchParams.get('before') ?? undefined, after: url.searchParams.get('after') ?? undefined, path: url.searchParams.get('path') ?? undefined }) }); return;
+  }
+  if (method === 'GET' && pathname === '/api/changes') { sendJson(response, 200, { data: services.db.listChanges(Math.max(0, Number(url.searchParams.get('after') ?? 0) || 0), Math.min(1000, Math.max(1, Number(url.searchParams.get('limit') ?? 250) || 250))) }); return; }
+  if (method === 'GET' && pathname === '/api/jobs') { sendJson(response, 200, { data: services.db.listJobs(Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? 25) || 25))) }); return; }
+  if (method === 'GET' && pathname === '/api/activity') { sendJson(response, 200, { data: services.db.listActivity(Number(url.searchParams.get('limit') ?? 100)) }); return; }
+  if (method === 'GET' && pathname === '/api/trash') { sendJson(response, 200, { data: services.db.listTrash() }); return; }
+  if (method === 'POST' && pathname === '/api/trash/empty') { sendJson(response, 200, { data: { removed: await services.files.emptyTrash() } }); return; }
+  const restoreTrash = pathname.match(/^\/api\/trash\/([0-9a-f-]{36})\/restore$/i);
+  if (method === 'POST' && restoreTrash) { sendJson(response, 200, { data: await services.files.restoreTrash(restoreTrash[1]) }); return; }
+  const trashItem = pathname.match(/^\/api\/trash\/([0-9a-f-]{36})$/i);
+  if (method === 'DELETE' && trashItem) { await services.files.permanentlyDeleteTrash(trashItem[1]); sendJson(response, 200, { data: { deleted: true } }); return; }
+  if (method === 'POST' && pathname === '/api/uploads') { sendJson(response, 201, { data: await services.uploads.start(await readJson(request)) }); return; }
+  const uploadChunk = pathname.match(/^\/api\/uploads\/([0-9a-f-]{36})\/chunks\/(\d+)$/i);
+  if (method === 'PUT' && uploadChunk) {
+    const length = request.headers['content-length'];
+    const declared = typeof length === 'string' ? Number(length) : undefined;
+    if (declared !== undefined && (!Number.isSafeInteger(declared) || declared < 0)) throw fail.badRequest('Invalid Content-Length.');
+    sendJson(response, 200, { data: await services.uploads.writeChunk(uploadChunk[1], Number(uploadChunk[2]), request, declared) }); return;
+  }
+  const uploadComplete = pathname.match(/^\/api\/uploads\/([0-9a-f-]{36})\/complete$/i);
+  if (method === 'POST' && uploadComplete) { sendJson(response, 201, { data: await services.uploads.complete(uploadComplete[1]) }); return; }
+  const upload = pathname.match(/^\/api\/uploads\/([0-9a-f-]{36})$/i);
+  if (method === 'GET' && upload) { const session = services.db.getUpload(upload[1]); if (!session) throw fail.notFound('Upload session not found.'); sendJson(response, 200, { data: session }); return; }
+  if (method === 'DELETE' && upload) { await services.uploads.cancel(upload[1]); sendJson(response, 200, { data: { cancelled: true } }); return; }
+  const versionRestore = pathname.match(/^\/api\/versions\/([0-9a-f-]{36})\/restore$/i);
+  if (method === 'POST' && versionRestore) { sendJson(response, 200, { data: await services.files.restoreVersion(versionRestore[1]) }); return; }
+  const versionContent = pathname.match(/^\/api\/versions\/([0-9a-f-]{36})\/content$/i);
+  if (method === 'GET' && versionContent) {
+    const version = services.db.getVersion(versionContent[1]); if (!version) throw fail.notFound('Version not found.');
+    await sendDiskFile(request, response, await storage.internalExisting(version.storedPath), false, undefined); return;
+  }
+  const fileThumbnail = pathname.match(/^\/api\/files\/([0-9a-f-]{36})\/thumbnail$/i);
+  if (method === 'GET' && fileThumbnail) {
+    const thumbnail = await services.files.thumbnail(fileThumbnail[1]);
+    if (!thumbnail) throw fail.notFound('No generated thumbnail is available.');
+    await sendDiskFile(request, response, thumbnail, true, 'image/webp'); return;
+  }
+  const archive = pathname.match(/^\/api\/files\/([0-9a-f-]{36})\/archive$/i);
+  if (method === 'GET' && archive) {
+    const file = await services.files.getNode(archive[1]);
+    services.db.addActivity('downloaded_archive', file.id, file.relativePath);
+    await streamTar(response, await storage.pathFor(file.relativePath), file.name);
+    return;
+  }
+  const fileContent = pathname.match(/^\/api\/files\/([0-9a-f-]{36})\/(download|content)$/i);
+  if (method === 'GET' && fileContent) {
+    const file = await services.files.getNode(fileContent[1]); if (file.isDirectory) throw fail.badRequest('Folders cannot be downloaded as a single file.');
+    services.db.addActivity(fileContent[2] === 'download' ? 'downloaded' : 'previewed', file.id, file.relativePath);
+    await sendDiskFile(request, response, await storage.pathFor(file.relativePath), fileContent[2] === 'content', file.mimeType ?? undefined, file.name); return;
+  }
+  const fileVersions = pathname.match(/^\/api\/files\/([0-9a-f-]{36})\/versions$/i);
+  if (method === 'GET' && fileVersions) { const file = await services.files.getNode(fileVersions[1]); sendJson(response, 200, { data: services.db.listVersions(file.id) }); return; }
+  const file = pathname.match(/^\/api\/files\/([0-9a-f-]{36})$/i);
+  if (file) {
+    if (method === 'GET') { const item = await services.files.getNode(file[1]); sendJson(response, 200, { data: { ...item, previewable: isPreviewable(item.mimeType) } }); return; }
+    if (method === 'DELETE') { await services.files.trash(file[1]); sendJson(response, 200, { data: { trashed: true } }); return; }
+    if (method === 'PATCH') {
+      const body = await readJson(request); const action = body.action;
+      let item;
+      if (action === 'rename') item = await services.files.rename(file[1], body.name);
+      else if (action === 'move') item = await services.files.move(file[1], body.parentPath);
+      else if (action === 'copy') item = await services.files.copy(file[1], body.parentPath);
+      else if (action === 'favorite') { item = services.db.setFavorite(file[1], body.favorite === true); if (!item) throw fail.notFound(); services.db.addActivity(item.favorite ? 'favorited' : 'unfavorited', item.id, item.relativePath); services.db.addChange(item.favorite ? 'favorited' : 'unfavorited', item.id, item.relativePath); }
+      else throw fail.badRequest('Unsupported file action.');
+      sendJson(response, 200, { data: item }); return;
+    }
+  }
+  throw fail.notFound('API endpoint not found.');
+}
+
+function authorize(request: IncomingMessage, config: CloudConfig): void {
+  if (config.authDisabled) return;
+  const supplied = typeof request.headers['x-continental-token'] === 'string' ? request.headers['x-continental-token'] : readCookie(request, 'cc_session');
+  if (typeof supplied !== 'string' || !config.authToken) throw fail.unauthorized();
+  const a = Buffer.from(supplied); const b = Buffer.from(config.authToken);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) throw fail.unauthorized();
+}
+function readCookie(request: IncomingMessage, key: string): string | undefined {
+  const value = request.headers.cookie; if (!value) return undefined;
+  const encoded = value.split(';').map((entry) => entry.trim()).find((entry) => entry.startsWith(`${key}=`))?.slice(key.length + 1);
+  try { return encoded ? decodeURIComponent(encoded) : undefined; } catch { return undefined; }
+}
+function assertMutationOrigin(request: IncomingMessage, config: CloudConfig): void {
+  const origin = request.headers.origin;
+  if (!origin) return; // native clients do not send Origin; they still need the API token.
+  if (config.allowedOrigin && origin !== config.allowedOrigin) throw fail.forbidden('Request origin is not allowed.');
+  if (!config.allowedOrigin) {
+    const parsed = new URL(origin); const host = request.headers.host?.toLowerCase();
+    if (parsed.host.toLowerCase() !== host) throw fail.forbidden('Cross-origin mutation was blocked.');
+  }
+}
+function corsHeaders(request: IncomingMessage, config: CloudConfig): Record<string, string> {
+  const origin = request.headers.origin;
+  // The browser UI is same-origin. Only an explicitly configured trusted origin
+  // receives CORS permission; never reflect arbitrary origins around private data.
+  return origin && config.allowedOrigin === origin ? { 'Access-Control-Allow-Origin': origin, 'Vary': 'Origin', 'Access-Control-Allow-Headers': 'Content-Type, X-Continental-Token', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS' } : {};
+}
+function setSecurityHeaders(response: ServerResponse): void {
+  response.setHeader('X-Content-Type-Options', 'nosniff'); response.setHeader('X-Frame-Options', 'DENY'); response.setHeader('Referrer-Policy', 'no-referrer');
+  response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()'); response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  response.setHeader('Content-Security-Policy', "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'");
+  response.setHeader('Cache-Control', 'no-store');
+}
+async function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const contentType = request.headers['content-type'] ?? '';
+  if (!contentType.includes('application/json')) throw fail.badRequest('Expected application/json.');
+  let total = 0; const parts: Buffer[] = [];
+  for await (const chunk of request) { total += chunk.length; if (total > JSON_LIMIT) throw fail.tooLarge('JSON request is too large.'); parts.push(chunk); }
+  try { const value = JSON.parse(Buffer.concat(parts).toString('utf8')); if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error(); return value; } catch { throw fail.badRequest('Invalid JSON request.'); }
+}
+function sendJson(response: ServerResponse, status: number, body: unknown): void { response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); response.end(JSON.stringify(body)); }
+async function sendDiskFile(request: IncomingMessage, response: ServerResponse, path: string, inline: boolean, mimeType?: string, filename?: string): Promise<void> {
+  const info = await stat(path); if (!info.isFile()) throw fail.notFound();
+  const range = request.headers.range; let start = 0; let end = info.size - 1; let status = 200;
+  if (range) {
+    const match = range.match(/^bytes=(\d*)-(\d*)$/); if (!match) { response.writeHead(416, { 'Content-Range': `bytes */${info.size}` }); response.end(); return; }
+    start = match[1] ? Number(match[1]) : 0; end = match[2] ? Number(match[2]) : end;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || end >= info.size) { response.writeHead(416, { 'Content-Range': `bytes */${info.size}` }); response.end(); return; }
+    status = 206;
+  }
+  // User-provided HTML, XML, and SVG must never execute in the Cloud origin.
+  // Text previews fetch these bytes explicitly; downloads retain their original file.
+  const unsafeInlineType = ['text/html; charset=utf-8', 'application/xml; charset=utf-8', 'image/svg+xml'].includes(mimeType ?? '');
+  const deliveredType = inline && unsafeInlineType ? 'text/plain; charset=utf-8' : (mimeType ?? 'application/octet-stream');
+  const headers: Record<string, string | number> = { 'Content-Type': deliveredType, 'Accept-Ranges': 'bytes', 'Content-Length': end - start + 1 };
+  if (status === 206) headers['Content-Range'] = `bytes ${start}-${end}/${info.size}`;
+  if (filename) headers['Content-Disposition'] = `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(filename)}`;
+  response.writeHead(status, headers); if (request.method === 'HEAD') { response.end(); return; }
+  await new Promise<void>((resolve, reject) => { const source = createReadStream(path, { start, end }); source.on('error', reject); response.on('error', reject); response.on('finish', resolve); source.pipe(response); });
+}
+async function serveStatic(response: ServerResponse, pathname: string): Promise<void> {
+  const root = join(import.meta.dirname, '..', 'public');
+  const path = pathname === '/' ? join(root, 'index.html') : pathname === '/client/app.js' ? join(import.meta.dirname, '..', 'client', 'app.js') : join(root, pathname);
+  if (!path.startsWith(root) && pathname !== '/client/app.js') throw fail.notFound();
+  try { const info = await lstat(path); if (!info.isFile()) throw fail.notFound(); } catch (error: unknown) { if (error instanceof CloudError) throw error; throw fail.notFound(); }
+  response.writeHead(200, { 'Content-Type': STATIC_TYPES[extname(path)] ?? 'application/octet-stream', 'Cache-Control': 'public, max-age=300' });
+  createReadStream(path).pipe(response);
+}

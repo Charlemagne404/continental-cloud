@@ -1,0 +1,17 @@
+services:
+  continental-cloud:
+    build: .
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      CLOUD_HOST: 0.0.0.0
+      CLOUD_PORT: 8787
+      CLOUD_STORAGE_PATH: /storage
+      CLOUD_STORAGE_ID: ${CLOUD_STORAGE_ID:?Set this to the existing .continental/storage-id value}
+      CLOUD_AUTH_TOKEN: ${CLOUD_AUTH_TOKEN:?Set a long random token}
+      CLOUD_ALLOW_STORAGE_INIT: "false"
+    volumes:
+      - /mnt/continental-cloud:/storage
+    ports:
+      # Loopback only: Caddy/Tailscale owns any external exposure.
+      - 127.0.0.1:8787:8787
