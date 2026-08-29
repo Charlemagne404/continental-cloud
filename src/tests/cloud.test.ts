@@ -87,3 +87,13 @@ test('health stays observable while storage is degraded and writes are blocked',
   assert.equal(health.response.status, 200); assert.equal(health.body.data.state, 'degraded'); assert.equal(health.body.data.storage.state, 'offline');
   const write = await json<{ error: { code: string } }>(run, '/files/folder', 'POST', { parentPath: '', name: 'must-not-write' }); assert.equal(write.response.status, 503); assert.equal(write.body.error.code, 'STORAGE_UNAVAILABLE');
 });
+
+test('organization and operations APIs expose tags, saved search, duplicate groups, and restore-as-copy', async () => {
+  const run = await boot(); const file = await upload(run, 'brief.txt', 'first'); await upload(run, 'brief.txt', 'second', true); await upload(run, 'brief-copy.txt', 'second');
+  const versions = await request<{ data: Array<{ id: string }> }>(run, `/files/${file.id}/versions`); const copy = await json<{ data: { relativePath: string } }>(run, `/versions/${versions.body.data[0].id}/restore-copy`, 'POST', {}); assert.equal(copy.response.status, 201); assert.notEqual(copy.body.data.relativePath, 'brief.txt');
+  const tagged = await json<{ data: Array<{ name: string }> }>(run, `/files/${file.id}/tags`, 'PUT', { tags: ['work', 'review'] }); assert.deepEqual(tagged.body.data.map((tag) => tag.name), ['review', 'work']);
+  const saved = await json<{ data: { id: string } }>(run, '/saved-searches', 'POST', { name: 'Recent text', query: 'brief', filters: { type: 'text' } }); assert.equal(saved.response.status, 201);
+  const suggestions = await request<{ data: string[] }>(run, '/search/suggestions?q=brief'); assert(suggestions.body.data.includes('brief.txt'));
+  const duplicates = await request<{ data: Array<{ count: number }> }>(run, '/duplicates'); assert(duplicates.body.data.some((group) => group.count >= 2));
+  const operations = await request<{ data: { usage: { folders: unknown[] }; retention: { versionRetention: number } } }>(run, '/operations'); assert.equal(operations.response.status, 200); assert(operations.body.data.usage.folders.length >= 1);
+});

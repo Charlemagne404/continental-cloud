@@ -11,7 +11,8 @@ It is designed to bind to loopback and sit behind a Tailscale-only Caddy listene
 - Filesystem-backed create, rename, move, copy, download, trash/restore/permanent delete, image thumbnails, previews, and version restoration.
 - Chunked upload API that writes each request directly to a temporary disk file; incomplete data is never moved into `data/`.
 - SQLite metadata and FTS search, with fast current-folder synchronization and an explicit full reconciliation command for external changes.
-- Indexed filter search, streamed folder `.tar` downloads, durable change sequences for a future sync client, version retention, and persistent maintenance-job history.
+- Indexed filter search, streamed folder `.tar` downloads, a durable sync change journal, version retention, and persistent maintenance-job history.
+- Continental Cloud Sync: selective live folder mappings, trusted-device records, resumable chunk transfers, version-preconditioned writes, conflict copies, offline queues, native folder watching, and conservative periodic reconciliation.
 - A persistent storage identity that prevents a vanished mountpoint from being initialized as empty storage in production.
 - Token-based auth abstraction, session-only HTTP-only browser cookie, path/symlink protections, mutation origin checks, strict security headers, and protected internal paths.
 
@@ -128,6 +129,17 @@ GET    /api/uploads/:id                   inspect received chunks for a resumabl
 
 GET    /api/search?q=
 GET    /api/changes?after=&limit=         # monotonic change journal for sync clients
+POST   /api/sync/devices                  # register a trusted desktop device
+GET    /api/sync/devices                  # device and selected-folder status
+DELETE /api/sync/devices/:id              # revoke a device
+GET    /api/sync/changes?after=&limit=    # authoritative enriched change journal
+GET    /api/sync/snapshot?path=           # one-time mapping bootstrap only
+POST   /api/sync/mappings | /api/sync/ack
+POST   /api/sync/uploads                  # resumable, base-revision-aware upload
+PUT    /api/sync/uploads/:id/chunks/:n
+POST   /api/sync/uploads/:id/complete
+POST   /api/sync/mutations | /api/sync/folders
+GET    /api/sync/events                   # advisory SSE: journal remains authoritative
 GET    /api/jobs                           # reconciliation and maintenance history
 GET    /api/recent | /api/favorites | /api/activity
 GET    /api/trash
@@ -138,18 +150,47 @@ GET    /api/storage | /api/health
 POST   /api/storage/reconcile
 ```
 
-Responses use JSON, consistent error codes, UTC ISO timestamps, and opaque UUIDs. The route surface is intentionally client-oriented so a desktop sync client can later use it without replacing the storage layer.
+Responses use JSON, consistent error codes, UTC ISO timestamps, and opaque UUIDs. The route surface keeps browser and desktop clients on the same storage, version-history, Trash, and authorization model.
 
 ## Reliability model and current boundaries
 
 Filesystem and SQLite transactions cannot be one atomic transaction. Continental Cloud therefore writes uploads to `temp/`, only exposes them after a same-volume rename into `data/`, and retains overwritten bytes under `versions/`. The drive performs reconciliation to repair metadata drift after out-of-band changes or an interrupted operation. Keep periodic backups and test restoration—software cannot make an SMB/Wi-Fi disk reliable.
 
-Continental ID, multi-user authorization, sharing/public links, desktop syncing, device management, advanced media transcoding, and automatic conflict resolution remain intentionally out of scope. The change journal and stable node IDs make a future trusted-device sync client possible without redesigning the storage model.
+Continental ID, multi-user authorization, sharing/public links, advanced media transcoding, cloud-only placeholders, block-level binary delta sync, and collaboration editing remain intentionally out of scope. Sync is deliberately a private, trusted-device feature: it uses the existing token/Tailscale boundary and never exposes the underlying NAS directly.
+
+## Continental Cloud Sync
+
+The desktop client is a small native Node daemon for Windows, macOS, and Linux. It uses recursive `fs.watch` on Windows and macOS, watches each directory on Linux, listens to advisory server-sent change notifications, and falls back to a conservative ten-minute reconciliation. It does **not** poll and rescan the whole tree every few seconds. If a native recursive watcher is unavailable, it falls back to per-directory watchers and keeps the mapping safe.
+
+Install/build Continental Cloud normally, then on each device:
+
+```bash
+cloud-sync init --server https://cloud.your-tailnet.ts.net --token 'your-cloud-token' --name 'MacBook'
+cloud-sync map add --cloud /Projects/Meridian --local "$HOME/Continental Cloud/Meridian"
+cloud-sync start
+```
+
+In Windows PowerShell, use a normal Windows path, for example:
+
+```powershell
+cloud-sync map add --cloud /Projects/Meridian --local "$env:USERPROFILE\Continental Cloud\Meridian"
+cloud-sync start
+```
+
+Useful controls are `cloud-sync status`, `cloud-sync sync` for a manual run, `cloud-sync pause <mapping-id>`, and `cloud-sync resume <mapping-id>`. The device ID, selected mappings, cursor, local node/revision state, pending operations, and interrupted-transfer information are held in a restrictive config file under the platform config directory: `%LOCALAPPDATA%\Continental Cloud Sync` on Windows, `~/Library/Application Support/Continental Cloud Sync` on macOS, or `$XDG_CONFIG_HOME/continental-cloud-sync` on Linux. Use `--config <path>` for automation or isolated tests.
+
+Mappings are selective and names need not match: cloud `/Projects/Meridian` can map to any safe local directory. The initial snapshot is only for mapping setup; routine synchronization consumes journal changes since the stored cursor. Downloads stream through an adjacent temporary file and atomically rename only after the checksum matches. A changed or missing local root, symlink, unsafe path, or device mount identity causes sync to stop rather than infer deletions.
+
+If two devices upload from the same base revision, the server preserves the existing file and stores the later upload as `name (Conflict - Device - YYYY-MM-DD).ext`. It records `sync_conflict` in activity/history and the desktop client surfaces it in status. Cloud deletes go to the normal Cloud Trash, and connected mappings remove their corresponding local copy. Restores from Trash are journaled as `restore` and download normally.
+
+The web app's **Sync & Devices** view shows trusted devices, selected mappings, current status/errors, conflicts, and supports revocation. It intentionally does not try to remotely browse a device's local filesystem or turn private sync into MDM.
+
+See [SYNC_PROTOCOL.md](SYNC_PROTOCOL.md) for the stable protocol contract and client-author notes.
 
 ## Verification
 
 ```bash
-npm test       # seven integration/security/reliability tests
+npm test       # integration, security, reliability, and sync tests
 npm run lint   # strict TypeScript check
 npm run build  # production artifact
 ```

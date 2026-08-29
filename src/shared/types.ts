@@ -29,6 +29,8 @@ export interface FileNode {
   createdAt: string;
   modifiedAt: string;
   checksum: string | null;
+  /** Monotonic per-node revision. Sync clients use this as their write precondition. */
+  revision: number;
   favorite: boolean;
   trashedAt: string | null;
 }
@@ -55,6 +57,8 @@ export interface UploadSession {
   receivedChunks: number[];
   status: 'active' | 'failed' | 'complete' | 'cancelled';
   createdAt: string;
+  sync?: SyncUploadContext;
+  resultNodeId?: string;
 }
 
 export interface ActivityEvent {
@@ -69,10 +73,48 @@ export interface ActivityEvent {
 export interface ChangeEvent {
   sequence: number;
   action: string;
+  operation: SyncOperation;
   nodeId: string | null;
   path: string | null;
+  previousPath: string | null;
+  revision: number | null;
+  checksum: string | null;
+  deviceId: string | null;
   detail: string | null;
   createdAt: string;
+}
+
+export type SyncOperation = 'create' | 'modify' | 'delete' | 'rename' | 'move' | 'folder_create' | 'folder_delete' | 'restore';
+
+export interface SyncUploadContext {
+  deviceId: string;
+  deviceName?: string;
+  nodeId?: string;
+  baseRevision?: number;
+  idempotencyKey: string;
+}
+
+export interface SyncDevice {
+  id: string;
+  name: string;
+  platform: string;
+  clientVersion: string;
+  createdAt: string;
+  lastSeenAt: string;
+  lastProcessedChange: number;
+  revokedAt: string | null;
+}
+
+export interface SyncMapping {
+  id: string;
+  deviceId: string;
+  cloudPath: string;
+  localPath: string;
+  paused: boolean;
+  lastProcessedChange: number;
+  lastSyncAt: string | null;
+  status: string;
+  lastError: string | null;
 }
 
 export interface JobStatus {
@@ -82,4 +124,18 @@ export interface JobStatus {
   detail: string | null;
   createdAt: string;
   completedAt: string | null;
+}
+
+export interface SavedSearch {
+  id: string;
+  name: string;
+  query: string;
+  filters: Record<string, string | number | boolean>;
+  createdAt: string;
+}
+
+export interface Tag {
+  id: string;
+  name: string;
+  color: string;
 }

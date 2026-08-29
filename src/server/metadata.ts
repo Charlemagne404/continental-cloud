@@ -2,23 +2,24 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { ActivityEvent, ChangeEvent, FileNode, JobStatus, UploadSession } from '../shared/types.js';
+import type { ActivityEvent, ChangeEvent, FileNode, JobStatus, SavedSearch, SyncDevice, SyncMapping, SyncOperation, Tag, UploadSession } from '../shared/types.js';
 import type { DiskEntry } from './storage.js';
 import { parentPath } from './paths.js';
 
 type NodeRow = {
   id: string; relative_path: string; parent_path: string; name: string; is_directory: number; mime_type: string | null;
-  size: number; created_at: string; modified_at: string; checksum: string | null; favorite: number; trashed_at: string | null;
+  size: number; created_at: string; modified_at: string; checksum: string | null; revision: number; favorite: number; trashed_at: string | null;
 };
 
 function now(): string { return new Date().toISOString(); }
 function node(row: NodeRow): FileNode {
-  return { id: row.id, relativePath: row.relative_path, parentPath: row.parent_path, name: row.name, isDirectory: Boolean(row.is_directory), mimeType: row.mime_type, size: row.size, createdAt: row.created_at, modifiedAt: row.modified_at, checksum: row.checksum, favorite: Boolean(row.favorite), trashedAt: row.trashed_at };
+  return { id: row.id, relativePath: row.relative_path, parentPath: row.parent_path, name: row.name, isDirectory: Boolean(row.is_directory), mimeType: row.mime_type, size: row.size, createdAt: row.created_at, modifiedAt: row.modified_at, checksum: row.checksum, revision: row.revision ?? 1, favorite: Boolean(row.favorite), trashedAt: row.trashed_at };
 }
 function json<T>(value: string): T { return JSON.parse(value) as T; }
 
 export class MetadataDatabase {
   private db!: DatabaseSync;
+  private changeListener?: (change: ChangeEvent) => void;
   constructor(private readonly path: string) {}
 
   async open(): Promise<void> {
@@ -29,7 +30,7 @@ export class MetadataDatabase {
       CREATE TABLE IF NOT EXISTS nodes (
         id TEXT PRIMARY KEY, relative_path TEXT NOT NULL UNIQUE, parent_path TEXT NOT NULL, name TEXT NOT NULL,
         is_directory INTEGER NOT NULL, mime_type TEXT, size INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
-        modified_at TEXT NOT NULL, checksum TEXT, favorite INTEGER NOT NULL DEFAULT 0, trashed_at TEXT
+        modified_at TEXT NOT NULL, checksum TEXT, revision INTEGER NOT NULL DEFAULT 1, favorite INTEGER NOT NULL DEFAULT 0, trashed_at TEXT
       );
       CREATE INDEX IF NOT EXISTS nodes_parent_active ON nodes(parent_path, trashed_at);
       CREATE INDEX IF NOT EXISTS nodes_modified_active ON nodes(modified_at DESC) WHERE trashed_at IS NULL;
@@ -44,22 +45,54 @@ export class MetadataDatabase {
       CREATE TABLE IF NOT EXISTS upload_sessions (
         id TEXT PRIMARY KEY, parent_path TEXT NOT NULL, name TEXT NOT NULL, mime_type TEXT, size INTEGER NOT NULL,
         chunk_size INTEGER NOT NULL, chunk_count INTEGER NOT NULL, received_chunks TEXT NOT NULL DEFAULT '[]',
-        status TEXT NOT NULL, created_at TEXT NOT NULL, temp_name TEXT NOT NULL
+        status TEXT NOT NULL, created_at TEXT NOT NULL, temp_name TEXT NOT NULL, sync_context TEXT, result_node_id TEXT
       );
       CREATE TABLE IF NOT EXISTS activity (
         id TEXT PRIMARY KEY, action TEXT NOT NULL, node_id TEXT, path TEXT, detail TEXT, created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS activity_created ON activity(created_at DESC);
       CREATE TABLE IF NOT EXISTS change_journal (
-        sequence INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, node_id TEXT, path TEXT, detail TEXT, created_at TEXT NOT NULL
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, operation TEXT NOT NULL DEFAULT 'modify', node_id TEXT, path TEXT, previous_path TEXT, revision INTEGER, checksum TEXT, device_id TEXT, detail TEXT, created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS change_journal_node ON change_journal(node_id, sequence);
+      CREATE INDEX IF NOT EXISTS change_journal_path ON change_journal(path, sequence);
+      CREATE TABLE IF NOT EXISTS sync_devices (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, platform TEXT NOT NULL, client_version TEXT NOT NULL,
+        created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, last_processed_change INTEGER NOT NULL DEFAULT 0, revoked_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS sync_mappings (
+        id TEXT PRIMARY KEY, device_id TEXT NOT NULL REFERENCES sync_devices(id) ON DELETE CASCADE,
+        cloud_path TEXT NOT NULL, local_path TEXT NOT NULL, paused INTEGER NOT NULL DEFAULT 0,
+        last_processed_change INTEGER NOT NULL DEFAULT 0, last_sync_at TEXT, status TEXT NOT NULL DEFAULT 'idle', last_error TEXT,
+        UNIQUE(device_id, cloud_path)
+      );
+      CREATE TABLE IF NOT EXISTS sync_idempotency (
+        key TEXT PRIMARY KEY, device_id TEXT NOT NULL REFERENCES sync_devices(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL, result TEXT, created_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS jobs (
         id TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, detail TEXT, created_at TEXT NOT NULL, completed_at TEXT
       );
       CREATE INDEX IF NOT EXISTS jobs_created ON jobs(created_at DESC);
+      CREATE TABLE IF NOT EXISTS tags (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, color TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS node_tags (node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE, tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE, PRIMARY KEY(node_id, tag_id));
+      CREATE TABLE IF NOT EXISTS saved_searches (id TEXT PRIMARY KEY, name TEXT NOT NULL, query TEXT NOT NULL, filters TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS health_history (id TEXT PRIMARY KEY, state TEXT NOT NULL, free_bytes INTEGER, total_bytes INTEGER, used_bytes INTEGER, checked_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS health_history_checked ON health_history(checked_at DESC);
       CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(node_id UNINDEXED, name, relative_path);
     `);
+    // The application predates schema migrations. These additive upgrades keep an
+    // existing private drive usable without requiring a one-off migration command.
+    for (const statement of [
+      'ALTER TABLE nodes ADD COLUMN revision INTEGER NOT NULL DEFAULT 1',
+      'ALTER TABLE upload_sessions ADD COLUMN sync_context TEXT',
+      'ALTER TABLE upload_sessions ADD COLUMN result_node_id TEXT',
+      "ALTER TABLE change_journal ADD COLUMN operation TEXT NOT NULL DEFAULT 'modify'",
+      'ALTER TABLE change_journal ADD COLUMN previous_path TEXT',
+      'ALTER TABLE change_journal ADD COLUMN revision INTEGER',
+      'ALTER TABLE change_journal ADD COLUMN checksum TEXT',
+      'ALTER TABLE change_journal ADD COLUMN device_id TEXT',
+    ]) { try { this.db.exec(statement); } catch (error: unknown) { if (!String(error).includes('duplicate column name')) throw error; } }
   }
 
   close(): void { this.db?.close(); }
@@ -75,8 +108,8 @@ export class MetadataDatabase {
       return this.getNode(existing.id)!;
     }
     const id = randomUUID();
-    this.db.prepare(`INSERT INTO nodes (id,relative_path,parent_path,name,is_directory,mime_type,size,created_at,modified_at,checksum,favorite,trashed_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,0,NULL)`).run(id, entry.relativePath, parentPath(entry.relativePath), entry.name, Number(entry.isDirectory), mimeType, entry.size, entry.birthtime.toISOString() || timestamp, entry.mtime.toISOString() || timestamp, null);
+    this.db.prepare(`INSERT INTO nodes (id,relative_path,parent_path,name,is_directory,mime_type,size,created_at,modified_at,checksum,revision,favorite,trashed_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,1,0,NULL)`).run(id, entry.relativePath, parentPath(entry.relativePath), entry.name, Number(entry.isDirectory), mimeType, entry.size, entry.birthtime.toISOString() || timestamp, entry.mtime.toISOString() || timestamp, null);
     this.upsertFts(id, entry.name, entry.relativePath);
     return this.getNode(id)!;
   }
@@ -84,8 +117,8 @@ export class MetadataDatabase {
   createNode(relativePath: string, name: string, isDirectory: boolean, size = 0, mimeType: string | null = null): FileNode {
     const timestamp = now();
     const id = randomUUID();
-    this.db.prepare(`INSERT INTO nodes (id,relative_path,parent_path,name,is_directory,mime_type,size,created_at,modified_at,checksum,favorite,trashed_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,0,NULL)`).run(id, relativePath, parentPath(relativePath), name, Number(isDirectory), mimeType, size, timestamp, timestamp, null);
+    this.db.prepare(`INSERT INTO nodes (id,relative_path,parent_path,name,is_directory,mime_type,size,created_at,modified_at,checksum,revision,favorite,trashed_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,1,0,NULL)`).run(id, relativePath, parentPath(relativePath), name, Number(isDirectory), mimeType, size, timestamp, timestamp, null);
     this.upsertFts(id, name, relativePath);
     return this.getNode(id)!;
   }
@@ -109,6 +142,33 @@ export class MetadataDatabase {
   listFavorites(): FileNode[] {
     return (this.db.prepare('SELECT * FROM nodes WHERE trashed_at IS NULL AND favorite=1 ORDER BY modified_at DESC').all() as NodeRow[]).map(node);
   }
+  tagsForNode(nodeId: string): Tag[] { return this.db.prepare('SELECT t.id,t.name,t.color FROM tags t JOIN node_tags nt ON nt.tag_id=t.id WHERE nt.node_id=? ORDER BY t.name COLLATE NOCASE').all(nodeId).map((row: any) => ({ id: row.id, name: row.name, color: row.color })); }
+  listTags(): Tag[] { return this.db.prepare('SELECT id,name,color FROM tags ORDER BY name COLLATE NOCASE').all().map((row: any) => ({ id: row.id, name: row.name, color: row.color })); }
+  setNodeTags(nodeId: string, names: string[]): Tag[] {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('DELETE FROM node_tags WHERE node_id=?').run(nodeId);
+      for (const raw of [...new Set(names.map((name) => name.trim()).filter(Boolean))].slice(0, 20)) {
+        const name = raw.slice(0, 48); let tag = this.db.prepare('SELECT id FROM tags WHERE name=? COLLATE NOCASE').get(name) as { id: string } | undefined;
+        if (!tag) { const id = randomUUID(); const count = Number((this.db.prepare('SELECT COUNT(*) as count FROM tags').get() as { count: number }).count); const color = ['#85b9ae', '#dcc281', '#9ba8dd', '#d88f9c', '#87bd86'][count % 5]!; this.db.prepare('INSERT INTO tags(id,name,color,created_at) VALUES(?,?,?,?)').run(id, name, color, now()); tag = { id }; }
+        this.db.prepare('INSERT INTO node_tags(node_id,tag_id) VALUES(?,?)').run(nodeId, tag.id);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    return this.tagsForNode(nodeId);
+  }
+  saveSearch(name: string, query: string, filters: Record<string, string | number | boolean>): SavedSearch { const value = { id: randomUUID(), name, query, filters, createdAt: now() }; this.db.prepare('INSERT INTO saved_searches(id,name,query,filters,created_at) VALUES(?,?,?,?,?)').run(value.id, value.name, value.query, JSON.stringify(value.filters), value.createdAt); return value; }
+  listSavedSearches(): SavedSearch[] { return this.db.prepare('SELECT * FROM saved_searches ORDER BY created_at DESC').all().map((row: any) => ({ id: row.id, name: row.name, query: row.query, filters: json(row.filters), createdAt: row.created_at })); }
+  deleteSavedSearch(id: string): boolean { return Number(this.db.prepare('DELETE FROM saved_searches WHERE id=?').run(id).changes) === 1; }
+  searchSuggestions(query: string): string[] { const value = `%${query.replace(/[%_]/g, '\\$&')}%`; return this.db.prepare('SELECT name FROM nodes WHERE trashed_at IS NULL AND name LIKE ? ESCAPE \'\\\' ORDER BY modified_at DESC LIMIT 8').all(value).map((row: any) => row.name); }
+  duplicateGroups(): Array<{ checksum: string; count: number; bytes: number; items: FileNode[] }> {
+    const groups = this.db.prepare('SELECT checksum,COUNT(*) as count,MAX(size) as bytes FROM nodes WHERE trashed_at IS NULL AND is_directory=0 AND checksum IS NOT NULL GROUP BY checksum HAVING COUNT(*) > 1 ORDER BY count DESC').all() as Array<{ checksum: string; count: number; bytes: number }>;
+    return groups.map((group) => ({ ...group, items: (this.db.prepare('SELECT * FROM nodes WHERE checksum=? AND trashed_at IS NULL ORDER BY modified_at DESC').all(group.checksum) as NodeRow[]).map(node) }));
+  }
+  usageByFolder(): Array<{ folder: string; bytes: number; files: number }> { return this.db.prepare("SELECT CASE WHEN instr(relative_path,'/')=0 THEN 'My drive' ELSE substr(relative_path,1,instr(relative_path,'/')-1) END as folder,COALESCE(SUM(size),0) as bytes,COUNT(*) as files FROM nodes WHERE trashed_at IS NULL AND is_directory=0 GROUP BY folder ORDER BY bytes DESC LIMIT 20").all().map((row: any) => ({ folder: row.folder, bytes: Number(row.bytes), files: Number(row.files) })); }
+  usageByType(): Array<{ type: string; bytes: number; files: number }> { return this.db.prepare("SELECT COALESCE(NULLIF(substr(mime_type,1,instr(mime_type,'/')-1),''),'other') as type,COALESCE(SUM(size),0) as bytes,COUNT(*) as files FROM nodes WHERE trashed_at IS NULL AND is_directory=0 GROUP BY type ORDER BY bytes DESC LIMIT 20").all().map((row: any) => ({ type: row.type, bytes: Number(row.bytes), files: Number(row.files) })); }
+  recordHealth(input: { state: string; freeBytes?: number; totalBytes?: number; usedBytes?: number | null }): void { this.db.prepare('INSERT INTO health_history(id,state,free_bytes,total_bytes,used_bytes,checked_at) VALUES(?,?,?,?,?,?)').run(randomUUID(), input.state, input.freeBytes ?? null, input.totalBytes ?? null, input.usedBytes ?? null, now()); this.db.prepare('DELETE FROM health_history WHERE id NOT IN (SELECT id FROM health_history ORDER BY checked_at DESC LIMIT 180)').run(); }
+  healthHistory(): Array<{ state: string; freeBytes: number | null; totalBytes: number | null; usedBytes: number | null; checkedAt: string }> { return this.db.prepare('SELECT state,free_bytes,total_bytes,used_bytes,checked_at FROM health_history ORDER BY checked_at DESC LIMIT 60').all().map((row: any) => ({ state: row.state, freeBytes: row.free_bytes, totalBytes: row.total_bytes, usedBytes: row.used_bytes, checkedAt: row.checked_at })); }
   search(query: string, limit = 100, filters: { extension?: string; type?: string; favorite?: boolean; trashed?: boolean; minSize?: number; maxSize?: number; before?: string; after?: string; path?: string } = {}): FileNode[] {
     const terms = query.match(/[\p{L}\p{N}_]+/gu)?.slice(0, 12) ?? [];
     const where = this.searchWhere(filters);
@@ -127,7 +187,7 @@ export class MetadataDatabase {
     return this.getNode(id);
   }
   updateFileAfterUpload(id: string, size: number, mimeType: string | null): FileNode {
-    this.db.prepare('UPDATE nodes SET size=?, mime_type=?, modified_at=?, trashed_at=NULL WHERE id=?').run(size, mimeType, now(), id);
+    this.db.prepare('UPDATE nodes SET size=?, mime_type=?, modified_at=?, revision=revision+1, trashed_at=NULL WHERE id=?').run(size, mimeType, now(), id);
     return this.getNode(id)!;
   }
   setChecksum(id: string, checksum: string): FileNode {
@@ -142,7 +202,7 @@ export class MetadataDatabase {
         const suffix = row.relative_path === from ? '' : row.relative_path.slice(from.length);
         const next = `${to}${suffix}`;
         const nextName = next.includes('/') ? next.slice(next.lastIndexOf('/') + 1) : next;
-        this.db.prepare('UPDATE nodes SET relative_path=?,parent_path=?,name=?,modified_at=? WHERE id=?').run(next, parentPath(next), nextName, now(), row.id);
+        this.db.prepare('UPDATE nodes SET relative_path=?,parent_path=?,name=?,modified_at=?,revision=revision + CASE WHEN id=? THEN 1 ELSE 0 END WHERE id=?').run(next, parentPath(next), nextName, now(), id, row.id);
         this.upsertFts(row.id, nextName, next);
       }
       this.db.exec('COMMIT');
@@ -153,7 +213,7 @@ export class MetadataDatabase {
     const itemId = randomUUID(); const deletedAt = now();
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      this.db.prepare('UPDATE nodes SET trashed_at=? WHERE relative_path=? OR relative_path LIKE ?').run(deletedAt, originalPath, `${originalPath}/%`);
+      this.db.prepare('UPDATE nodes SET trashed_at=?,revision=revision + CASE WHEN id=? THEN 1 ELSE 0 END WHERE relative_path=? OR relative_path LIKE ?').run(deletedAt, id, originalPath, `${originalPath}/%`);
       const target = this.getNode(id);
       if (!target) throw new Error('Missing node.');
       this.db.prepare('INSERT INTO trash_items (id,node_id,storage_key,original_path,deleted_at,name,is_directory) VALUES (?,?,?,?,?,?,?)')
@@ -176,7 +236,7 @@ export class MetadataDatabase {
     // Path rewrites use their own transaction. The filesystem move is deliberately
     // reconciled on startup if a process dies between that move and this update.
     this.movePrefix(item.node.id, item.originalPath, restoredPath);
-    this.db.prepare('UPDATE nodes SET trashed_at=NULL WHERE relative_path=? OR relative_path LIKE ?').run(restoredPath, `${restoredPath}/%`);
+    this.db.prepare('UPDATE nodes SET trashed_at=NULL,revision=revision + CASE WHEN id=? THEN 1 ELSE 0 END WHERE relative_path=? OR relative_path LIKE ?').run(item.node.id, restoredPath, `${restoredPath}/%`);
     this.db.prepare('DELETE FROM trash_items WHERE id=?').run(id);
     return this.getNode(item.node.id);
   }
@@ -210,15 +270,20 @@ export class MetadataDatabase {
     return row ? { id: row.id, nodeId: row.node_id, storedPath: row.stored_path } : undefined;
   }
   createUpload(session: UploadSession, tempName: string): void {
-    this.db.prepare(`INSERT INTO upload_sessions (id,parent_path,name,mime_type,size,chunk_size,chunk_count,received_chunks,status,created_at,temp_name) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(session.id, session.parentPath, session.name, session.mimeType, session.size, session.chunkSize, session.chunkCount, JSON.stringify([]), session.status, session.createdAt, tempName);
+    this.db.prepare(`INSERT INTO upload_sessions (id,parent_path,name,mime_type,size,chunk_size,chunk_count,received_chunks,status,created_at,temp_name,sync_context,result_node_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(session.id, session.parentPath, session.name, session.mimeType, session.size, session.chunkSize, session.chunkCount, JSON.stringify([]), session.status, session.createdAt, tempName, session.sync ? JSON.stringify(session.sync) : null, null);
   }
   getUpload(id: string): (UploadSession & { tempName: string }) | undefined {
     const row = this.db.prepare('SELECT * FROM upload_sessions WHERE id=?').get(id) as any;
-    return row ? { id: row.id, parentPath: row.parent_path, name: row.name, mimeType: row.mime_type, size: row.size, chunkSize: row.chunk_size, chunkCount: row.chunk_count, receivedChunks: json<number[]>(row.received_chunks), status: row.status, createdAt: row.created_at, tempName: row.temp_name } : undefined;
+    return row ? { id: row.id, parentPath: row.parent_path, name: row.name, mimeType: row.mime_type, size: row.size, chunkSize: row.chunk_size, chunkCount: row.chunk_count, receivedChunks: json<number[]>(row.received_chunks), status: row.status, createdAt: row.created_at, tempName: row.temp_name, sync: row.sync_context ? json(row.sync_context) : undefined, resultNodeId: row.result_node_id ?? undefined } : undefined;
   }
   updateUploadChunks(id: string, receivedChunks: number[]): void { this.db.prepare('UPDATE upload_sessions SET received_chunks=? WHERE id=?').run(JSON.stringify(receivedChunks), id); }
   updateUploadStatus(id: string, status: UploadSession['status']): void { this.db.prepare('UPDATE upload_sessions SET status=? WHERE id=?').run(status, id); }
+  completeUpload(id: string, nodeId: string): void { this.db.prepare("UPDATE upload_sessions SET status='complete',result_node_id=? WHERE id=?").run(nodeId, id); }
+  findUploadByIdempotency(deviceId: string, key: string): UploadSession | undefined {
+    const row = this.db.prepare("SELECT * FROM upload_sessions WHERE json_extract(sync_context, '$.deviceId')=? AND json_extract(sync_context, '$.idempotencyKey')=? AND status IN ('active','complete') ORDER BY created_at DESC LIMIT 1").get(deviceId, key) as any;
+    return row ? this.getUpload(row.id) : undefined;
+  }
   deleteUpload(id: string): void { this.db.prepare('DELETE FROM upload_sessions WHERE id=?').run(id); }
   staleUploads(before: string): Array<{ id: string; tempName: string }> { return this.db.prepare(`SELECT id,temp_name FROM upload_sessions WHERE status IN ('active','cancelled','failed') AND created_at < ?`).all(before).map((r: any) => ({ id: r.id, tempName: r.temp_name })); }
   addActivity(action: string, nodeId: string | null, path: string | null, detail: string | null = null): void {
@@ -227,13 +292,69 @@ export class MetadataDatabase {
   listActivity(limit = 100): ActivityEvent[] {
     return this.db.prepare('SELECT * FROM activity ORDER BY created_at DESC LIMIT ?').all(limit).map((row: any) => ({ id: row.id, action: row.action, nodeId: row.node_id, path: row.path, detail: row.detail, createdAt: row.created_at }));
   }
-  addChange(action: string, nodeId: string | null, path: string | null, detail: string | null = null): number {
-    return Number(this.db.prepare('INSERT INTO change_journal (action,node_id,path,detail,created_at) VALUES (?,?,?,?,?)').run(action, nodeId, path, detail, now()).lastInsertRowid);
+  addChange(action: string, nodeId: string | null, path: string | null, detail: string | null = null, options: { operation?: SyncOperation; previousPath?: string | null; revision?: number | null; checksum?: string | null; deviceId?: string | null } = {}): number {
+    const operation = options.operation ?? operationFor(action);
+    const result = this.db.prepare('INSERT INTO change_journal (action,operation,node_id,path,previous_path,revision,checksum,device_id,detail,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+      .run(action, operation, nodeId, path, options.previousPath ?? null, options.revision ?? null, options.checksum ?? null, options.deviceId ?? null, detail, now());
+    const sequence = Number(result.lastInsertRowid);
+    this.changeListener?.({ sequence, action, operation, nodeId, path, previousPath: options.previousPath ?? null, revision: options.revision ?? null, checksum: options.checksum ?? null, deviceId: options.deviceId ?? null, detail, createdAt: now() });
+    return sequence;
   }
   listChanges(after = 0, limit = 250): ChangeEvent[] {
-    return this.db.prepare('SELECT * FROM change_journal WHERE sequence>? ORDER BY sequence ASC LIMIT ?').all(after, limit).map((row: any) => ({ sequence: Number(row.sequence), action: row.action, nodeId: row.node_id, path: row.path, detail: row.detail, createdAt: row.created_at }));
+    return this.db.prepare('SELECT * FROM change_journal WHERE sequence>? ORDER BY sequence ASC LIMIT ?').all(after, limit).map((row: any) => ({ sequence: Number(row.sequence), action: row.action, operation: row.operation ?? operationFor(row.action), nodeId: row.node_id, path: row.path, previousPath: row.previous_path ?? null, revision: row.revision ?? null, checksum: row.checksum ?? null, deviceId: row.device_id ?? null, detail: row.detail, createdAt: row.created_at }));
   }
+  setChangeListener(listener: (change: ChangeEvent) => void): void { this.changeListener = listener; }
   latestChangeSequence(): number { return Number((this.db.prepare('SELECT COALESCE(MAX(sequence),0) as value FROM change_journal').get() as { value: number }).value); }
+  upsertSyncDevice(input: { id: string; name: string; platform: string; clientVersion: string }): SyncDevice {
+    const existing = this.db.prepare('SELECT * FROM sync_devices WHERE id=?').get(input.id) as any;
+    const timestamp = now();
+    if (existing) {
+      if (existing.revoked_at) throw new Error('SYNC_DEVICE_REVOKED');
+      this.db.prepare('UPDATE sync_devices SET name=?,platform=?,client_version=?,last_seen_at=? WHERE id=?').run(input.name, input.platform, input.clientVersion, timestamp, input.id);
+    } else {
+      this.db.prepare('INSERT INTO sync_devices (id,name,platform,client_version,created_at,last_seen_at,last_processed_change,revoked_at) VALUES (?,?,?,?,?,?,0,NULL)')
+        .run(input.id, input.name, input.platform, input.clientVersion, timestamp, timestamp);
+    }
+    return this.getSyncDevice(input.id)!;
+  }
+  getSyncDevice(id: string): SyncDevice | undefined {
+    const row = this.db.prepare('SELECT * FROM sync_devices WHERE id=?').get(id) as any;
+    return row ? device(row) : undefined;
+  }
+  listSyncDevices(): SyncDevice[] { return this.db.prepare('SELECT * FROM sync_devices ORDER BY last_seen_at DESC').all().map(device); }
+  revokeSyncDevice(id: string): boolean { return Number(this.db.prepare('UPDATE sync_devices SET revoked_at=? WHERE id=? AND revoked_at IS NULL').run(now(), id).changes) === 1; }
+  touchSyncDevice(id: string): void { this.db.prepare('UPDATE sync_devices SET last_seen_at=? WHERE id=? AND revoked_at IS NULL').run(now(), id); }
+  upsertSyncMapping(input: { id: string; deviceId: string; cloudPath: string; localPath: string; paused?: boolean }): SyncMapping {
+    const existing = this.db.prepare('SELECT id FROM sync_mappings WHERE device_id=? AND cloud_path=?').get(input.deviceId, input.cloudPath) as { id: string } | undefined;
+    if (existing && existing.id !== input.id) {
+      this.db.prepare('UPDATE sync_mappings SET local_path=?,paused=? WHERE id=?').run(input.localPath, Number(input.paused === true), existing.id);
+      return this.getSyncMapping(existing.id)!;
+    }
+    this.db.prepare(`INSERT INTO sync_mappings (id,device_id,cloud_path,local_path,paused,last_processed_change,last_sync_at,status,last_error)
+      VALUES (?,?,?,?,?,0,NULL,'idle',NULL)
+      ON CONFLICT(id) DO UPDATE SET cloud_path=excluded.cloud_path,local_path=excluded.local_path,paused=excluded.paused`)
+      .run(input.id, input.deviceId, input.cloudPath, input.localPath, Number(input.paused === true));
+    return this.getSyncMapping(input.id)!;
+  }
+  getSyncMapping(id: string): SyncMapping | undefined {
+    const row = this.db.prepare('SELECT * FROM sync_mappings WHERE id=?').get(id) as any;
+    return row ? mapping(row) : undefined;
+  }
+  listSyncMappings(deviceId?: string): SyncMapping[] {
+    const rows = deviceId ? this.db.prepare('SELECT * FROM sync_mappings WHERE device_id=? ORDER BY cloud_path').all(deviceId) : this.db.prepare('SELECT * FROM sync_mappings ORDER BY cloud_path').all();
+    return rows.map(mapping);
+  }
+  updateSyncMapping(id: string, input: { paused?: boolean; lastProcessedChange?: number; status?: string; lastError?: string | null }): SyncMapping | undefined {
+    const current = this.getSyncMapping(id); if (!current) return undefined;
+    this.db.prepare('UPDATE sync_mappings SET paused=?,last_processed_change=?,last_sync_at=?,status=?,last_error=? WHERE id=?')
+      .run(Number(input.paused ?? current.paused), input.lastProcessedChange ?? current.lastProcessedChange, now(), input.status ?? current.status, input.lastError === undefined ? current.lastError : input.lastError, id);
+    const next = this.getSyncMapping(id)!;
+    this.db.prepare('UPDATE sync_devices SET last_processed_change=MAX(last_processed_change,?),last_seen_at=? WHERE id=?').run(next.lastProcessedChange, now(), next.deviceId);
+    return next;
+  }
+  listNodesByPrefix(relativePath: string): FileNode[] {
+    return (this.db.prepare('SELECT * FROM nodes WHERE trashed_at IS NULL AND (relative_path=? OR relative_path LIKE ?) ORDER BY LENGTH(relative_path),relative_path COLLATE NOCASE').all(relativePath, relativePath ? `${relativePath}/%` : '%') as NodeRow[]).map(node);
+  }
   startJob(kind: string, detail: string | null = null): string {
     const id = randomUUID(); this.db.prepare('INSERT INTO jobs (id,kind,state,detail,created_at,completed_at) VALUES (?,?,\'running\',?,?,NULL)').run(id, kind, detail, now()); return id;
   }
@@ -278,5 +399,17 @@ export class MetadataDatabase {
     for (const row of rows) this.db.prepare('DELETE FROM files_fts WHERE node_id=?').run(row.id);
   }
 }
+
+function operationFor(action: string): SyncOperation {
+  if (action === 'folder_created') return 'folder_create';
+  if (action === 'trashed' || action === 'permanently_deleted') return 'delete';
+  if (action === 'restored') return 'restore';
+  if (action === 'renamed') return 'rename';
+  if (action === 'moved') return 'move';
+  if (action === 'copied') return 'create';
+  return 'modify';
+}
+function device(row: any): SyncDevice { return { id: row.id, name: row.name, platform: row.platform, clientVersion: row.client_version, createdAt: row.created_at, lastSeenAt: row.last_seen_at, lastProcessedChange: Number(row.last_processed_change), revokedAt: row.revoked_at }; }
+function mapping(row: any): SyncMapping { return { id: row.id, deviceId: row.device_id, cloudPath: row.cloud_path, localPath: row.local_path, paused: Boolean(row.paused), lastProcessedChange: Number(row.last_processed_change), lastSyncAt: row.last_sync_at, status: row.status, lastError: row.last_error }; }
 
 export function metadataPath(storageRoot: string): string { return join(storageRoot, '.continental', 'metadata.db'); }

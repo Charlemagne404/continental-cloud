@@ -21,6 +21,8 @@
           <button class="nav-item" data-view="recent"><span>◷</span> Recent</button>
           <button class="nav-item" data-view="favorites"><span>✦</span> Favorites</button>
           <button class="nav-item" data-view="activity"><span>⌁</span> Activity</button>
+          <button class="nav-item" data-view="sync"><span>↹</span> Sync &amp; Devices</button>
+          <button class="nav-item" data-view="operations"><span>◌</span> Operations</button>
           <button class="nav-item" data-view="trash"><span>⌫</span> Trash</button>
         </nav>
         <div class="sidebar-foot">
@@ -32,7 +34,7 @@
         <header class="topbar">
           <button class="icon-button mobile-nav" data-action="mobile-nav" aria-label="Open navigation">☰</button>
           <div class="crumbs" id="breadcrumbs" aria-label="Breadcrumb"></div>
-          <label class="search"><span>⌕</span><input id="search" type="search" autocomplete="off" placeholder="Search your cloud"></label>
+          <label class="search"><span>⌕</span><input id="search" type="search" autocomplete="off" placeholder="Search your cloud" list="search-suggestions"></label><datalist id="search-suggestions"></datalist>
           <button class="icon-button" data-action="theme" aria-label="Toggle appearance">◐</button>
         </header>
         <section class="content-head">
@@ -49,12 +51,14 @@
               <button class="quiet-button" data-action="rename">Rename</button>
               <button class="quiet-button" data-action="move">Move</button>
               <button class="quiet-button" data-action="copy">Copy</button>
+              <button class="quiet-button" data-action="restore">Restore</button>
               <button class="quiet-button danger" data-action="delete">Trash</button>
             </div>
             <button class="quiet-button" data-action="sort" id="sort-button">Name ↕</button>
             <div class="view-switch" role="group" aria-label="View mode"><button class="icon-button active" data-action="grid" aria-label="Grid view">▦</button><button class="icon-button" data-action="list" aria-label="List view">☷</button></div>
           </div>
         </section>
+        <section id="search-tools" class="search-tools" hidden></section>
         <section class="dropzone" id="dropzone" aria-live="polite">
           <div class="loading-state" id="loading"><span class="orb"></span><p>Reading the horizon…</p></div>
           <div class="empty-state" id="empty" hidden><span class="empty-mark">△</span><h2>This space is ready</h2><p>Bring in a file, create a folder, or drop something here.</p><button class="primary" data-action="new">Add to Cloud</button></div>
@@ -67,6 +71,8 @@
     <input id="file-input" type="file" multiple hidden>
     <dialog id="new-dialog" class="cloud-dialog"><form method="dialog"><button class="dialog-close" value="cancel" aria-label="Close">×</button><p class="eyebrow">ADD TO CLOUD</p><h2>Choose a starting point</h2><button class="dialog-choice" value="folder" data-new-choice="folder"><span>▱</span><b>New folder</b><small>Organize a new space</small></button><button class="dialog-choice" value="files" data-new-choice="files"><span>↑</span><b>Upload files</b><small>From this device</small></button></form></dialog>
     <dialog id="preview-dialog" class="preview-dialog"><button class="dialog-close" data-action="close-preview" aria-label="Close preview">×</button><div id="preview-content"></div></dialog>
+    <dialog id="versions-dialog" class="preview-dialog versions-dialog"><button class="dialog-close" data-action="close-versions" aria-label="Close version history">×</button><div id="versions-content"></div></dialog>
+    <dialog id="sync-setup-dialog" class="cloud-dialog"><button class="dialog-close" data-action="close-sync-setup" aria-label="Close">×</button><p class="eyebrow">DEVICE PAIRING</p><h2>Pair a sync device</h2><p>Choose the device and folders it should sync. The setup fingerprint confirms this pairing request belongs to this cloud; complete the matching setup on the device.</p><div id="pairing-code" class="pairing-code" aria-label="Pairing fingerprint"></div><label>Device name<input id="pair-device-name" value="New device" maxlength="120"></label><label>Platform<input id="pair-device-platform" value="Desktop" maxlength="48"></label><label>Local folder<input id="pair-local-path" placeholder="/Users/me/Continental Cloud"></label><label>Cloud folder<input id="pair-cloud-path" placeholder="Optional, defaults to My drive"></label><button class="primary" data-action="pair-device">Register device mapping</button></dialog>
     <dialog id="auth-dialog" class="cloud-dialog auth-dialog"><form id="auth-form"><p class="eyebrow">PRIVATE ACCESS</p><h2>Unlock your cloud</h2><p>Enter the API token configured on your Continental Cloud server. It is kept only for this browser session.</p><label>Access token<input id="token-input" type="password" required autocomplete="current-password"></label><p class="form-error" id="auth-error" hidden></p><button class="primary" type="submit">Connect</button></form></dialog>
     <div class="toast-stack" id="toasts" aria-live="polite"></div>
     <script type="module" src="/client/app.js"></script>

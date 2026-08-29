@@ -10,8 +10,9 @@ import { metadataPath, MetadataDatabase } from './metadata.js';
 import { Storage } from './storage.js';
 import { UploadService } from './uploads.js';
 import { streamTar } from './archive.js';
+import { SyncNotifier, SyncService } from './sync.js';
 
-type Services = { db: MetadataDatabase; files: FileService; uploads: UploadService };
+type Services = { db: MetadataDatabase; files: FileService; uploads: UploadService; sync: SyncService; notifier: SyncNotifier };
 const JSON_LIMIT = 1_048_576;
 const STATIC_TYPES: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
 
@@ -24,8 +25,11 @@ export function createCloudServer(config: CloudConfig) {
     if (!services) {
       const db = new MetadataDatabase(metadataPath(config.storagePath));
       await db.open();
-      services = { db, files: new FileService(storage, db), uploads: undefined as never };
+      const notifier = new SyncNotifier();
+      services = { db, files: new FileService(storage, db), uploads: undefined as never, sync: undefined as never, notifier };
       services.uploads = new UploadService(services.files, config.maxUploadBytes, config.uploadChunkBytes, config.versionRetention);
+      services.sync = new SyncService(db, services.files, services.uploads);
+      db.setChangeListener((change) => notifier.publish(change));
     }
     services.db.health();
     return services;
@@ -62,6 +66,7 @@ export function createCloudServer(config: CloudConfig) {
           const status = await storage.refresh(); let usedBytes: number | null = null;
           let breakdown: { managedBytes: number; trashBytes: number; versionBytes: number } | null = null;
           if (status.state === 'ready') { try { const db = (await ensureServices()).db; usedBytes = db.usage(); breakdown = db.storageBreakdown(); } catch { /* health endpoint retains the database failure detail */ } }
+          if (status.state === 'ready' && services) services.db.recordHealth({ state: status.state, freeBytes: status.freeBytes, totalBytes: status.totalBytes, usedBytes });
           sendJson(response, 200, { data: { ...status, usedBytes, breakdown, warnings: status.freeBytes !== undefined && status.freeBytes < config.minFreeBytes ? ['Free space is below the configured safety reserve.'] : [] } });
           return;
         }
@@ -90,8 +95,65 @@ export function createCloudServer(config: CloudConfig) {
 
 async function handleApi(request: IncomingMessage, response: ServerResponse, url: URL, services: Services, storage: Storage, config: CloudConfig): Promise<void> {
   const { pathname } = url; const method = request.method!;
+  if (method === 'POST' && pathname === '/api/sync/devices') {
+    const device = services.sync.registerDevice(await readJson(request)); sendJson(response, 201, { data: device }); return;
+  }
+  if (method === 'GET' && pathname === '/api/sync/devices') { sendJson(response, 200, { data: services.sync.devices() }); return; }
+  const syncDevice = pathname.match(/^\/api\/sync\/devices\/([0-9a-f-]{36})$/i);
+  if (method === 'DELETE' && syncDevice) { services.sync.revokeDevice(syncDevice[1]); sendJson(response, 200, { data: { revoked: true } }); return; }
+  const consoleMappings = pathname.match(/^\/api\/sync\/devices\/([0-9a-f-]{36})\/mappings$/i);
+  if (consoleMappings && method === 'POST') { sendJson(response, 201, { data: services.sync.mappingForDevice(consoleMappings[1], await readJson(request)) }); return; }
+  const consoleMapping = pathname.match(/^\/api\/sync\/devices\/([0-9a-f-]{36})\/mappings\/([0-9a-f-]{36})$/i);
+  if (consoleMapping && method === 'PATCH') { sendJson(response, 200, { data: services.sync.setMappingFromConsole(consoleMapping[1], consoleMapping[2], await readJson(request)) }); return; }
+  if (pathname.startsWith('/api/sync/')) {
+    const deviceId = requiredSyncDevice(request);
+    if (method === 'GET' && pathname === '/api/sync/state') { sendJson(response, 200, { data: services.sync.state(deviceId) }); return; }
+    if (method === 'GET' && pathname === '/api/sync/mappings') { sendJson(response, 200, { data: services.sync.mappings(deviceId) }); return; }
+    if (method === 'POST' && pathname === '/api/sync/mappings') { sendJson(response, 201, { data: services.sync.mapping(deviceId, await readJson(request)) }); return; }
+    const mapping = pathname.match(/^\/api\/sync\/mappings\/([0-9a-f-]{36})$/i);
+    if (method === 'PATCH' && mapping) { sendJson(response, 200, { data: services.sync.setMappingStatus(deviceId, mapping[1], await readJson(request)) }); return; }
+    if (method === 'GET' && pathname === '/api/sync/changes') {
+      const after = Math.max(0, Number(url.searchParams.get('after') ?? 0) || 0); const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get('limit') ?? 250) || 250));
+      sendJson(response, 200, { data: services.sync.changes(deviceId, after, limit) }); return;
+    }
+    if (method === 'GET' && pathname === '/api/sync/snapshot') { sendJson(response, 200, { data: services.sync.snapshot(deviceId, url.searchParams.get('path') ?? '') }); return; }
+    if (method === 'POST' && pathname === '/api/sync/ack') { const body = await readJson(request); sendJson(response, 200, { data: services.sync.setMappingStatus(deviceId, String(body.mappingId ?? ''), { cursor: body.cursor, status: body.status ?? 'idle', error: body.error }) }); return; }
+    if (method === 'POST' && pathname === '/api/sync/folders') { sendJson(response, 201, { data: await services.sync.createFolder(deviceId, await readJson(request)) }); return; }
+    if (method === 'POST' && pathname === '/api/sync/mutations') { sendJson(response, 200, { data: await services.sync.mutation(deviceId, await readJson(request)) }); return; }
+    if (method === 'POST' && pathname === '/api/sync/uploads') { sendJson(response, 201, { data: await services.sync.startUpload(deviceId, await readJson(request)) }); return; }
+    const syncChunk = pathname.match(/^\/api\/sync\/uploads\/([0-9a-f-]{36})\/chunks\/(\d+)$/i);
+    if (method === 'PUT' && syncChunk) { services.sync.uploadForDevice(deviceId, syncChunk[1]); sendJson(response, 200, { data: await services.uploads.writeChunk(syncChunk[1], Number(syncChunk[2]), request, contentLength(request)) }); return; }
+    const syncUploadComplete = pathname.match(/^\/api\/sync\/uploads\/([0-9a-f-]{36})\/complete$/i);
+    if (method === 'POST' && syncUploadComplete) { services.sync.uploadForDevice(deviceId, syncUploadComplete[1]); sendJson(response, 201, { data: await services.uploads.complete(syncUploadComplete[1]) }); return; }
+    const syncUpload = pathname.match(/^\/api\/sync\/uploads\/([0-9a-f-]{36})$/i);
+    if (method === 'GET' && syncUpload) { sendJson(response, 200, { data: services.sync.uploadForDevice(deviceId, syncUpload[1]) }); return; }
+    const syncDownload = pathname.match(/^\/api\/sync\/files\/([0-9a-f-]{36})\/download$/i);
+    if (method === 'GET' && syncDownload) { const file = await services.files.getNode(syncDownload[1]); if (file.isDirectory) throw fail.badRequest('Folders cannot be downloaded as a single file.'); await sendDiskFile(request, response, await storage.pathFor(file.relativePath), false, file.mimeType ?? undefined, file.name); return; }
+    if (method === 'GET' && pathname === '/api/sync/events') { await streamSyncEvents(request, response, services.notifier); return; }
+  }
   if (method === 'POST' && pathname === '/api/storage/reconcile') {
     sendJson(response, 200, { data: await services.files.reconcile() }); return;
+  }
+  if (method === 'GET' && pathname === '/api/operations') {
+    const storageStatus = await storage.refresh(); const usedBytes = services.db.usage();
+    sendJson(response, 200, { data: {
+      storage: { ...storageStatus, usedBytes, breakdown: services.db.storageBreakdown(), history: services.db.healthHistory() },
+      jobs: services.db.listJobs(50), failedJobs: services.db.listJobs(100).filter((job) => job.state === 'failed'),
+      uploads: services.db.staleUploads(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()),
+      usage: { folders: services.db.usageByFolder(), types: services.db.usageByType() },
+      retention: { versionRetention: config.versionRetention, trashRetentionDays: config.trashRetentionDays, trashItems: services.db.listTrash().length, expiringTrash: services.db.expiredTrash(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()).length },
+      lastVerifiedRestore: services.db.listActivity(200).find((event) => event.action === 'version_restored' || event.action === 'restored') ?? null,
+    } }); return;
+  }
+  if (method === 'POST' && pathname === '/api/operations/cleanup') {
+    const body = await readJson(request); const hours = typeof body.uploadHours === 'number' && body.uploadHours >= 1 && body.uploadHours <= 8760 ? body.uploadHours : 24;
+    const removedUploads = await services.uploads.cleanupOlderThan(hours); const removedTrash = body.includeTrash === true ? await services.files.cleanupTrashOlderThan(config.trashRetentionDays) : 0;
+    sendJson(response, 200, { data: { removedUploads, removedTrash } }); return;
+  }
+  if (method === 'PATCH' && pathname === '/api/operations/retention') {
+    const body = await readJson(request); if (typeof body.versionRetention === 'number' && Number.isInteger(body.versionRetention) && body.versionRetention >= 1 && body.versionRetention <= 1000) config.versionRetention = body.versionRetention;
+    if (typeof body.trashRetentionDays === 'number' && Number.isInteger(body.trashRetentionDays) && body.trashRetentionDays >= 1 && body.trashRetentionDays <= 3650) config.trashRetentionDays = body.trashRetentionDays;
+    sendJson(response, 200, { data: { versionRetention: config.versionRetention, trashRetentionDays: config.trashRetentionDays } }); return;
   }
   if (method === 'GET' && pathname === '/api/files') {
     const path = url.searchParams.get('path') ?? '';
@@ -109,11 +171,19 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
     const boolean = (name: string): boolean | undefined => url.searchParams.get(name) === 'true' ? true : url.searchParams.get(name) === 'false' ? false : undefined;
     sendJson(response, 200, { data: services.db.search(url.searchParams.get('q') ?? '', Math.min(250, number('limit') ?? 100), { extension: url.searchParams.get('extension') ?? undefined, type: url.searchParams.get('type') ?? undefined, favorite: boolean('favorite'), trashed: boolean('trash'), minSize: number('minSize'), maxSize: number('maxSize'), before: url.searchParams.get('before') ?? undefined, after: url.searchParams.get('after') ?? undefined, path: url.searchParams.get('path') ?? undefined }) }); return;
   }
+  if (method === 'GET' && pathname === '/api/search/suggestions') { sendJson(response, 200, { data: services.db.searchSuggestions((url.searchParams.get('q') ?? '').slice(0, 80)) }); return; }
+  if (method === 'GET' && pathname === '/api/duplicates') { sendJson(response, 200, { data: services.db.duplicateGroups() }); return; }
+  if (method === 'GET' && pathname === '/api/tags') { sendJson(response, 200, { data: services.db.listTags() }); return; }
+  if (method === 'GET' && pathname === '/api/saved-searches') { sendJson(response, 200, { data: services.db.listSavedSearches() }); return; }
+  if (method === 'POST' && pathname === '/api/saved-searches') { const body = await readJson(request); const name = typeof body.name === 'string' ? body.name.trim().slice(0, 80) : ''; if (!name) throw fail.badRequest('A saved-search name is required.'); const query = typeof body.query === 'string' ? body.query.slice(0, 250) : ''; const filters = body.filters && typeof body.filters === 'object' && !Array.isArray(body.filters) ? body.filters as Record<string, string | number | boolean> : {}; sendJson(response, 201, { data: services.db.saveSearch(name, query, filters) }); return; }
+  const savedSearch = pathname.match(/^\/api\/saved-searches\/([0-9a-f-]{36})$/i);
+  if (savedSearch && method === 'DELETE') { if (!services.db.deleteSavedSearch(savedSearch[1])) throw fail.notFound('Saved search not found.'); sendJson(response, 200, { data: { deleted: true } }); return; }
   if (method === 'GET' && pathname === '/api/changes') { sendJson(response, 200, { data: services.db.listChanges(Math.max(0, Number(url.searchParams.get('after') ?? 0) || 0), Math.min(1000, Math.max(1, Number(url.searchParams.get('limit') ?? 250) || 250))) }); return; }
   if (method === 'GET' && pathname === '/api/jobs') { sendJson(response, 200, { data: services.db.listJobs(Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? 25) || 25))) }); return; }
   if (method === 'GET' && pathname === '/api/activity') { sendJson(response, 200, { data: services.db.listActivity(Number(url.searchParams.get('limit') ?? 100)) }); return; }
   if (method === 'GET' && pathname === '/api/trash') { sendJson(response, 200, { data: services.db.listTrash() }); return; }
   if (method === 'POST' && pathname === '/api/trash/empty') { sendJson(response, 200, { data: { removed: await services.files.emptyTrash() } }); return; }
+  if (method === 'POST' && pathname === '/api/trash/bulk') { const body = await readJson(request); const ids = Array.isArray(body.ids) ? body.ids.filter((id): id is string => typeof id === 'string').slice(0, 200) : []; if (!ids.length) throw fail.badRequest('Choose one or more trash items.'); if (body.action === 'restore') { for (const id of ids) await services.files.restoreTrash(id); sendJson(response, 200, { data: { restored: ids.length } }); return; } if (body.action === 'delete') { for (const id of ids) await services.files.permanentlyDeleteTrash(id); sendJson(response, 200, { data: { deleted: ids.length } }); return; } throw fail.badRequest('Unsupported bulk trash action.'); }
   const restoreTrash = pathname.match(/^\/api\/trash\/([0-9a-f-]{36})\/restore$/i);
   if (method === 'POST' && restoreTrash) { sendJson(response, 200, { data: await services.files.restoreTrash(restoreTrash[1]) }); return; }
   const trashItem = pathname.match(/^\/api\/trash\/([0-9a-f-]{36})$/i);
@@ -133,6 +203,8 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
   if (method === 'DELETE' && upload) { await services.uploads.cancel(upload[1]); sendJson(response, 200, { data: { cancelled: true } }); return; }
   const versionRestore = pathname.match(/^\/api\/versions\/([0-9a-f-]{36})\/restore$/i);
   if (method === 'POST' && versionRestore) { sendJson(response, 200, { data: await services.files.restoreVersion(versionRestore[1]) }); return; }
+  const versionCopy = pathname.match(/^\/api\/versions\/([0-9a-f-]{36})\/restore-copy$/i);
+  if (method === 'POST' && versionCopy) { sendJson(response, 201, { data: await services.files.restoreVersionAsCopy(versionCopy[1]) }); return; }
   const versionContent = pathname.match(/^\/api\/versions\/([0-9a-f-]{36})\/content$/i);
   if (method === 'GET' && versionContent) {
     const version = services.db.getVersion(versionContent[1]); if (!version) throw fail.notFound('Version not found.');
@@ -159,10 +231,13 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
   }
   const fileVersions = pathname.match(/^\/api\/files\/([0-9a-f-]{36})\/versions$/i);
   if (method === 'GET' && fileVersions) { const file = await services.files.getNode(fileVersions[1]); sendJson(response, 200, { data: services.db.listVersions(file.id) }); return; }
+  const fileTags = pathname.match(/^\/api\/files\/([0-9a-f-]{36})\/tags$/i);
+  if (fileTags && method === 'GET') { await services.files.getNode(fileTags[1]); sendJson(response, 200, { data: services.db.tagsForNode(fileTags[1]) }); return; }
+  if (fileTags && method === 'PUT') { const body = await readJson(request); await services.files.getNode(fileTags[1]); const tags = Array.isArray(body.tags) ? body.tags.filter((value): value is string => typeof value === 'string') : []; sendJson(response, 200, { data: services.db.setNodeTags(fileTags[1], tags) }); return; }
   const file = pathname.match(/^\/api\/files\/([0-9a-f-]{36})$/i);
   if (file) {
     if (method === 'GET') { const item = await services.files.getNode(file[1]); sendJson(response, 200, { data: { ...item, previewable: isPreviewable(item.mimeType) } }); return; }
-    if (method === 'DELETE') { await services.files.trash(file[1]); sendJson(response, 200, { data: { trashed: true } }); return; }
+    if (method === 'DELETE') { const trashId = await services.files.trash(file[1]); sendJson(response, 200, { data: { trashed: true, trashId } }); return; }
     if (method === 'PATCH') {
       const body = await readJson(request); const action = body.action;
       let item;
@@ -184,6 +259,26 @@ function authorize(request: IncomingMessage, config: CloudConfig): void {
   const a = Buffer.from(supplied); const b = Buffer.from(config.authToken);
   if (a.length !== b.length || !timingSafeEqual(a, b)) throw fail.unauthorized();
 }
+function requiredSyncDevice(request: IncomingMessage): string {
+  const value = request.headers['x-continental-device'];
+  if (typeof value !== 'string') throw fail.badRequest('Sync requests require X-Continental-Device.');
+  return value;
+}
+function contentLength(request: IncomingMessage): number | undefined {
+  const value = request.headers['content-length'];
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return undefined;
+  const parsed = Number(value); return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+async function streamSyncEvents(request: IncomingMessage, response: ServerResponse, notifier: SyncNotifier): Promise<void> {
+  response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  response.write('event: ready\ndata: {}\n\n');
+  await new Promise<void>((resolve) => {
+    const unsubscribe = notifier.onChange((change) => response.write(`event: change\ndata: ${JSON.stringify({ sequence: change.sequence })}\n\n`));
+    const heartbeat = setInterval(() => response.write(': keepalive\n\n'), 25_000);
+    const close = () => { clearInterval(heartbeat); unsubscribe(); resolve(); };
+    request.once('close', close); response.once('close', close);
+  });
+}
 function readCookie(request: IncomingMessage, key: string): string | undefined {
   const value = request.headers.cookie; if (!value) return undefined;
   const encoded = value.split(';').map((entry) => entry.trim()).find((entry) => entry.startsWith(`${key}=`))?.slice(key.length + 1);
@@ -202,7 +297,7 @@ function corsHeaders(request: IncomingMessage, config: CloudConfig): Record<stri
   const origin = request.headers.origin;
   // The browser UI is same-origin. Only an explicitly configured trusted origin
   // receives CORS permission; never reflect arbitrary origins around private data.
-  return origin && config.allowedOrigin === origin ? { 'Access-Control-Allow-Origin': origin, 'Vary': 'Origin', 'Access-Control-Allow-Headers': 'Content-Type, X-Continental-Token', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS' } : {};
+  return origin && config.allowedOrigin === origin ? { 'Access-Control-Allow-Origin': origin, 'Vary': 'Origin', 'Access-Control-Allow-Headers': 'Content-Type, X-Continental-Token, X-Continental-Device', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS' } : {};
 }
 function setSecurityHeaders(response: ServerResponse): void {
   response.setHeader('X-Content-Type-Options', 'nosniff'); response.setHeader('X-Frame-Options', 'DENY'); response.setHeader('Referrer-Policy', 'no-referrer');

@@ -2,7 +2,7 @@ import { lstat, mkdir, open, rename, rm } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import type { UploadSession } from '../shared/types.js';
+import type { SyncUploadContext, UploadSession } from '../shared/types.js';
 import type { FileNode } from '../shared/types.js';
 import { fail } from './errors.js';
 import { FileService, mimeFromName } from './files.js';
@@ -11,21 +11,26 @@ import { normalizeFileName, normalizeRelativePath, joinRelative } from './paths.
 export class UploadService {
   constructor(private readonly files: FileService, private readonly maxUploadBytes: number, private readonly chunkBytes: number, private readonly versionRetention = 25) {}
 
-  async start(input: { parentPath?: unknown; name?: unknown; size?: unknown; mimeType?: unknown; overwrite?: unknown }): Promise<UploadSession> {
+  async start(input: { parentPath?: unknown; name?: unknown; size?: unknown; mimeType?: unknown; overwrite?: unknown; sync?: SyncUploadContext }): Promise<UploadSession> {
     const parentPath = normalizeRelativePath(input.parentPath ?? '');
     const name = normalizeFileName(input.name);
     const size = typeof input.size === 'number' && Number.isSafeInteger(input.size) && input.size >= 0 ? input.size : NaN;
     if (!Number.isFinite(size)) throw fail.badRequest('Upload size must be a non-negative integer.');
     if (size > this.maxUploadBytes) throw fail.tooLarge(`Files may not exceed ${this.maxUploadBytes} bytes.`);
     const mimeType = typeof input.mimeType === 'string' && input.mimeType.length <= 255 ? input.mimeType : mimeFromName(name);
-    const overwrite = input.overwrite === true;
+    const sync = input.sync;
+    if (sync) {
+      const prior = this.files.db.findUploadByIdempotency(sync.deviceId, sync.idempotencyKey);
+      if (prior) return prior;
+    }
+    const overwrite = input.overwrite === true || Boolean(sync);
     const target = joinRelative(parentPath, name);
     await this.files.storage.assertParentSafe(target);
     const existing = this.files.db.getActiveNodeByPath(target);
     if (existing?.isDirectory) throw fail.conflict('A folder already has that name.');
     if (existing && !overwrite) throw fail.conflict('A file with that name already exists. Choose a different name or replace it.');
     const id = randomUUID();
-    const session: UploadSession = { id, parentPath, name, mimeType, size, chunkSize: this.chunkBytes, chunkCount: Math.max(1, Math.ceil(size / this.chunkBytes)), receivedChunks: [], status: 'active', createdAt: new Date().toISOString() };
+    const session: UploadSession = { id, parentPath, name, mimeType, size, chunkSize: this.chunkBytes, chunkCount: Math.max(1, Math.ceil(size / this.chunkBytes)), receivedChunks: [], status: 'active', createdAt: new Date().toISOString(), sync };
     const tempName = `${id}.part`;
     const tempPath = join(this.files.storage.internalRoot, 'temp', tempName);
     const handle = await open(tempPath, 'wx', 0o600);
@@ -60,17 +65,30 @@ export class UploadService {
     return { ...session, receivedChunks };
   }
 
-  async complete(uploadId: string): Promise<{ node: FileNode; versionCreated: boolean }> {
+  async complete(uploadId: string): Promise<{ node: FileNode; versionCreated: boolean; conflict: boolean; conflictPath?: string }> {
     const session = this.files.db.getUpload(uploadId);
     if (!session) throw fail.notFound('Upload session not found.');
+    if (session.status === 'complete' && session.resultNodeId) {
+      const node = this.files.db.getNode(session.resultNodeId); if (node) return { node, versionCreated: false, conflict: Boolean(session.sync && node.relativePath !== joinRelative(session.parentPath, session.name)), conflictPath: node.relativePath };
+    }
     if (session.status !== 'active') throw fail.conflict('This upload is no longer active.');
     if (session.receivedChunks.length !== session.chunkCount || session.receivedChunks.some((value, index) => value !== index)) throw fail.conflict('All upload chunks must arrive before completion.');
     await this.files.storage.requireReady();
-    const target = joinRelative(session.parentPath, session.name);
+    const requestedTarget = joinRelative(session.parentPath, session.name);
+    let target = requestedTarget;
     await this.files.storage.assertParentSafe(target);
     const tempPath = join(this.files.storage.internalRoot, 'temp', session.tempName);
     const checksum = await sha256File(tempPath);
-    const existing = this.files.db.getActiveNodeByPath(target);
+    let existing = this.files.db.getActiveNodeByPath(target);
+    const staleBase = Boolean(session.sync && (session.sync.nodeId
+      ? !existing || existing.id !== session.sync.nodeId || (session.sync.baseRevision !== undefined && existing.revision !== session.sync.baseRevision)
+      : existing));
+    let conflict = false;
+    if (staleBase) {
+      target = await this.files.conflictPath(session.parentPath, session.name, session.sync?.deviceName ?? session.sync!.deviceId.slice(0, 8));
+      existing = undefined;
+      conflict = true;
+    }
     let versionCreated = false;
     let movedVersion: { versionId: string; versionPath: string } | undefined;
     if (existing) {
@@ -97,11 +115,12 @@ export class UploadService {
     if (node) node = this.files.db.updateFileAfterUpload(node.id, session.size, session.mimeType);
     else node = this.files.db.createNode(target, session.name, false, session.size, session.mimeType);
     node = this.files.db.setChecksum(node.id, checksum);
-    this.files.db.updateUploadStatus(uploadId, 'complete');
-    this.files.db.addActivity('uploaded', node.id, target, versionCreated ? 'replaced_existing_file' : null);
-    this.files.db.addChange('uploaded', node.id, target, versionCreated ? 'replaced_existing_file' : null);
+    this.files.db.completeUpload(uploadId, node.id);
+    const detail = conflict ? `conflict_copy_of=${requestedTarget}` : versionCreated ? 'replaced_existing_file' : null;
+    this.files.db.addActivity(conflict ? 'sync_conflict' : 'uploaded', node.id, target, detail);
+    this.files.db.addChange(conflict ? 'sync_conflict' : 'uploaded', node.id, target, detail, { operation: existing ? 'modify' : 'create', revision: node.revision, checksum: node.checksum, deviceId: session.sync?.deviceId });
     if (versionCreated) await this.files.pruneVersions(node.id, this.versionRetention);
-    return { node: node!, versionCreated };
+    return { node: node!, versionCreated, conflict, conflictPath: conflict ? target : undefined };
   }
 
   async cancel(uploadId: string): Promise<void> {

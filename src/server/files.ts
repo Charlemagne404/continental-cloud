@@ -49,7 +49,7 @@ export class FileService {
     return file;
   }
 
-  async createFolder(parent: unknown, inputName: unknown): Promise<FileNode> {
+  async createFolder(parent: unknown, inputName: unknown, deviceId?: string): Promise<FileNode> {
     const targetParent = normalizeRelativePath(parent);
     const name = normalizeFileName(inputName);
     await this.storage.assertParentSafe(joinRelative(targetParent, name));
@@ -57,11 +57,11 @@ export class FileService {
     if (await this.exists(relativePath)) throw fail.conflict('An item with that name already exists.');
     await mkdir(this.storage.pathForNew(relativePath), { mode: 0o750 });
     const created = this.db.createNode(relativePath, name, true);
-    this.record('folder_created', created.id, relativePath);
+    this.record('folder_created', created.id, relativePath, null, { operation: 'folder_create', revision: created.revision, deviceId });
     return created;
   }
 
-  async rename(id: string, inputName: unknown): Promise<FileNode> {
+  async rename(id: string, inputName: unknown, deviceId?: string): Promise<FileNode> {
     const item = await this.getNode(id);
     const name = normalizeFileName(inputName);
     const target = joinRelative(item.parentPath, name);
@@ -71,11 +71,11 @@ export class FileService {
     await rename(await this.storage.pathFor(item.relativePath), this.storage.pathForNew(target));
     this.db.movePrefix(item.id, item.relativePath, target);
     const moved = this.db.getNode(id)!;
-    this.record('renamed', id, target, item.relativePath);
+    this.record('renamed', id, target, null, { operation: 'rename', previousPath: item.relativePath, revision: moved.revision, checksum: moved.checksum, deviceId });
     return moved;
   }
 
-  async move(id: string, targetParentInput: unknown): Promise<FileNode> {
+  async move(id: string, targetParentInput: unknown, deviceId?: string): Promise<FileNode> {
     const item = await this.getNode(id);
     const targetParent = normalizeRelativePath(targetParentInput);
     const target = joinRelative(targetParent, item.name);
@@ -86,11 +86,26 @@ export class FileService {
     await rename(await this.storage.pathFor(item.relativePath), this.storage.pathForNew(target));
     this.db.movePrefix(item.id, item.relativePath, target);
     const moved = this.db.getNode(id)!;
-    this.record('moved', id, target, item.relativePath);
+    this.record('moved', id, target, null, { operation: 'move', previousPath: item.relativePath, revision: moved.revision, checksum: moved.checksum, deviceId });
     return moved;
   }
 
-  async copy(id: string, targetParentInput: unknown): Promise<FileNode> {
+  async relocate(id: string, targetInput: unknown, deviceId?: string): Promise<FileNode> {
+    const item = await this.getNode(id);
+    const target = normalizeRelativePath(targetInput, { allowEmpty: false });
+    if (target === item.relativePath) return item;
+    if (item.isDirectory && (target.startsWith(`${item.relativePath}/`) || item.relativePath.startsWith(`${target}/`))) throw fail.conflict('A folder cannot be moved into itself or replace an ancestor.');
+    await this.storage.assertParentSafe(target);
+    if (await this.exists(target)) throw fail.conflict('An item with that name already exists in the destination.');
+    await rename(await this.storage.pathFor(item.relativePath), this.storage.pathForNew(target));
+    this.db.movePrefix(item.id, item.relativePath, target);
+    const moved = this.db.getNode(id)!;
+    const operation = item.parentPath === moved.parentPath ? 'rename' : item.name === moved.name ? 'move' : 'move';
+    this.record(operation === 'rename' ? 'renamed' : 'moved', id, target, null, { operation, previousPath: item.relativePath, revision: moved.revision, checksum: moved.checksum, deviceId });
+    return moved;
+  }
+
+  async copy(id: string, targetParentInput: unknown, deviceId?: string): Promise<FileNode> {
     const item = await this.getNode(id);
     const targetParent = normalizeRelativePath(targetParentInput);
     if (item.isDirectory && (targetParent === item.relativePath || targetParent.startsWith(`${item.relativePath}/`))) throw fail.conflict('A folder cannot be copied into itself.');
@@ -100,27 +115,29 @@ export class FileService {
     const indexed = await this.indexTree(target);
     const created = indexed.find((entry) => entry.relativePath === target);
     if (!created) throw new Error('Copied item was not indexed.');
-    this.record('copied', created.id, target, item.relativePath);
+    this.record('copied', created.id, target, item.relativePath, { operation: 'create', revision: created.revision, checksum: created.checksum, deviceId });
     return created;
   }
 
-  async trash(id: string): Promise<void> {
+  async trash(id: string, deviceId?: string): Promise<string> {
     const item = await this.getNode(id);
     const storageKey = randomUUID();
     await this.storage.requireReady();
     await rename(await this.storage.pathFor(item.relativePath), this.storage.trashPath(storageKey));
-    this.db.markTrashed(id, item.relativePath, storageKey);
-    this.record('trashed', id, item.relativePath);
+    const trashId = this.db.markTrashed(id, item.relativePath, storageKey);
+    const trashed = this.db.getNode(id)!;
+    this.record('trashed', id, item.relativePath, null, { operation: item.isDirectory ? 'folder_delete' : 'delete', revision: trashed.revision, checksum: trashed.checksum, deviceId });
+    return trashId;
   }
 
-  async restoreTrash(id: string): Promise<FileNode> {
+  async restoreTrash(id: string, deviceId?: string): Promise<FileNode> {
     await this.storage.requireReady();
     const item = this.db.getTrash(id); if (!item) throw fail.notFound('Trash item not found.');
     const target = await this.availablePath(parentPath(item.originalPath), basename(item.originalPath));
     await this.storage.assertParentSafe(target);
     await rename(this.storage.trashPath(item.storageKey), this.storage.pathForNew(target));
     const restored = this.db.restoreTrash(id, target); if (!restored) throw new Error('Unable to restore trash metadata.');
-    this.record('restored', restored.id, target, item.originalPath);
+    this.record('restored', restored.id, target, item.originalPath, { operation: 'restore', previousPath: item.originalPath, revision: restored.revision, checksum: restored.checksum, deviceId });
     return restored;
   }
 
@@ -157,7 +174,15 @@ export class FileService {
     return { versionId, versionPath };
   }
 
-  async restoreVersion(versionId: string): Promise<FileNode> {
+  /** A deterministic, human-readable name that never overwrites another device's work. */
+  async conflictPath(parent: string, name: string, deviceName: string): Promise<string> {
+    const extension = extname(name); const stem = extension ? name.slice(0, -extension.length) : name;
+    const date = new Date().toISOString().slice(0, 10);
+    const safeDevice = deviceName.replace(/[\\/:*?"<>|]/g, '-').trim().slice(0, 80) || 'Device';
+    return this.availablePath(parent, `${stem} (Conflict - ${safeDevice} - ${date})${extension}`);
+  }
+
+  async restoreVersion(versionId: string, deviceId?: string): Promise<FileNode> {
     const version = this.db.getVersion(versionId); if (!version) throw fail.notFound('Version not found.');
     const item = await this.getNode(version.nodeId);
     const activePath = await this.storage.pathFor(item.relativePath);
@@ -172,8 +197,17 @@ export class FileService {
     try { await rename(stagedPath, activePath); } catch (error) { await rename(currentPath, activePath); throw error; }
     this.db.createVersion(item.id, currentPath, item.name, item.mimeType, (await lstat(currentPath)).size);
     const restored = this.db.updateFileAfterUpload(item.id, versionInfo.size, item.mimeType);
-    this.record('version_restored', item.id, item.relativePath, versionId);
+    this.record('version_restored', item.id, item.relativePath, versionId, { operation: 'modify', revision: restored.revision, checksum: restored.checksum, deviceId });
     return restored;
+  }
+
+  async restoreVersionAsCopy(versionId: string): Promise<FileNode> {
+    const version = this.db.getVersion(versionId); if (!version) throw fail.notFound('Version not found.');
+    const item = await this.getNode(version.nodeId); const target = await this.availablePath(item.parentPath, item.name);
+    await this.storage.assertParentSafe(target); await copyFile(await this.storage.internalExisting(version.storedPath), this.storage.pathForNew(target));
+    const info = await lstat(await this.storage.pathFor(target)); const created = this.db.createNode(target, basename(target), false, info.size, item.mimeType);
+    this.record('version_restored_as_copy', created.id, target, versionId, { operation: 'create', revision: created.revision, checksum: created.checksum });
+    return created;
   }
 
   async thumbnail(id: string): Promise<string | undefined> {
@@ -249,9 +283,9 @@ export class FileService {
     // missing leaf. It never touches trash or the internal version store.
     if (!item.trashedAt) this.db.removeActivePathPrefix(item.relativePath);
   }
-  private record(action: string, nodeId: string | null, path: string | null, detail: string | null = null): void {
+  private record(action: string, nodeId: string | null, path: string | null, detail: string | null = null, options: { operation?: import('../shared/types.js').SyncOperation; previousPath?: string | null; revision?: number | null; checksum?: string | null; deviceId?: string } = {}): void {
     this.db.addActivity(action, nodeId, path, detail);
-    this.db.addChange(action, nodeId, path, detail);
+    this.db.addChange(action, nodeId, path, detail, options);
   }
 }
 
