@@ -1,0 +1,10 @@
+[Unit]
+Description=Continental Cloud maintenance cleanup
+Requires=continental-cloud.service
+After=continental-cloud.service
+RequiresMountsFor=/mnt/continental-cloud
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/charlie/continental-cloud
+ExecStart=/snap/bin/docker compose exec -T continental-cloud node dist/cli.js cleanup

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Continental Cloud maintenance cleanup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=15m
+Unit=continental-cloud-cleanup.service
+
+[Install]
+WantedBy=timers.target

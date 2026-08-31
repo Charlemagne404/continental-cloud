@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+node_modules
+dist
+storage
+coverage
+host-report.txt
+collect-host-report.sh
+*.log

@@ -1,0 +1,17 @@
+[Unit]
+Description=Continental Cloud container
+Requires=snap.docker.dockerd.service
+After=snap.docker.dockerd.service
+RequiresMountsFor=/mnt/continental-cloud
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/charlie/continental-cloud
+ExecStart=/snap/bin/docker compose up -d
+ExecStop=/snap/bin/docker compose down
+RemainAfterExit=yes
+TimeoutStartSec=0
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

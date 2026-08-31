@@ -10,8 +10,15 @@ services:
       CLOUD_STORAGE_ID: ${CLOUD_STORAGE_ID:?Set this to the existing .continental/storage-id value}
       CLOUD_AUTH_TOKEN: ${CLOUD_AUTH_TOKEN:?Set a long random token}
       CLOUD_ALLOW_STORAGE_INIT: "false"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    stop_grace_period: 30s
     volumes:
       - /mnt/continental-cloud:/storage
     ports:
       # Loopback only: Caddy/Tailscale owns any external exposure.
-      - 127.0.0.1:8787:8787
+      - 127.0.0.1:8790:8787
