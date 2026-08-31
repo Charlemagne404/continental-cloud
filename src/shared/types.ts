@@ -110,11 +110,63 @@ export interface SyncMapping {
   deviceId: string;
   cloudPath: string;
   localPath: string;
+  policy: SyncPolicy;
   paused: boolean;
   lastProcessedChange: number;
   lastSyncAt: string | null;
   status: string;
   lastError: string | null;
+  progress: SyncProgress | null;
+}
+
+export type SyncPolicyPreset = 'project' | 'exact';
+
+export interface SyncPolicy {
+  /** `project` omits generated dependencies/caches; `exact` mirrors every safe entry. */
+  preset: SyncPolicyPreset;
+  exclude: string[];
+}
+
+export const DEFAULT_PROJECT_SYNC_EXCLUDES = [
+  '.DS_Store', 'Thumbs.db',
+  'node_modules/**', '.venv/**', 'venv/**',
+  'dist/**', 'build/**', '.next/**', '.nuxt/**', '.turbo/**',
+  'coverage/**', 'target/**', '.cache/**', '.parcel-cache/**', '__pycache__/**',
+  '*.swp', '*.swo', '*.tmp',
+];
+
+export type SyncProgressPhase = 'idle' | 'scanning' | 'syncing' | 'complete' | 'error';
+
+export interface SyncProgress {
+  phase: SyncProgressPhase;
+  initial: boolean;
+  filesTotal: number;
+  filesDone: number;
+  foldersTotal: number;
+  foldersDone: number;
+  bytesTotal: number;
+  bytesDone: number;
+  excludedFiles: number;
+  excludedFolders: number;
+  excludedBytes: number;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface SyncPairing {
+  id: string;
+  cloudPath: string;
+  policy: SyncPolicy;
+  createdAt: string;
+  expiresAt: string;
+  claimedAt: string | null;
+  deviceId: string | null;
+}
+
+export interface SyncPairingClaim {
+  device: SyncDevice;
+  mapping: SyncMapping;
 }
 
 export interface JobStatus {

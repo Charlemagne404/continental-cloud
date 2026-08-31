@@ -95,6 +95,14 @@ export function createCloudServer(config: CloudConfig) {
 
 async function handleApi(request: IncomingMessage, response: ServerResponse, url: URL, services: Services, storage: Storage, config: CloudConfig): Promise<void> {
   const { pathname } = url; const method = request.method!;
+  if (method === 'POST' && pathname === '/api/sync/pairing') {
+    sendJson(response, 201, { data: services.sync.createPairing(await readJson(request)) }); return;
+  }
+  if (method === 'POST' && pathname === '/api/sync/pairing/claim') {
+    sendJson(response, 201, { data: services.sync.claimPairing(await readJson(request)) }); return;
+  }
+  const pairingStatus = pathname.match(/^\/api\/sync\/pairing\/([0-9a-f-]{36})$/i);
+  if (method === 'GET' && pairingStatus) { sendJson(response, 200, { data: services.sync.pairingStatus(pairingStatus[1]) }); return; }
   if (method === 'POST' && pathname === '/api/sync/devices') {
     const device = services.sync.registerDevice(await readJson(request)); sendJson(response, 201, { data: device }); return;
   }
@@ -117,7 +125,7 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
       sendJson(response, 200, { data: services.sync.changes(deviceId, after, limit) }); return;
     }
     if (method === 'GET' && pathname === '/api/sync/snapshot') { sendJson(response, 200, { data: services.sync.snapshot(deviceId, url.searchParams.get('path') ?? '') }); return; }
-    if (method === 'POST' && pathname === '/api/sync/ack') { const body = await readJson(request); sendJson(response, 200, { data: services.sync.setMappingStatus(deviceId, String(body.mappingId ?? ''), { cursor: body.cursor, status: body.status ?? 'idle', error: body.error }) }); return; }
+    if (method === 'POST' && pathname === '/api/sync/ack') { const body = await readJson(request); sendJson(response, 200, { data: services.sync.setMappingStatus(deviceId, String(body.mappingId ?? ''), { cursor: body.cursor, status: body.status ?? 'idle', error: body.error, progress: body.progress }) }); return; }
     if (method === 'POST' && pathname === '/api/sync/folders') { sendJson(response, 201, { data: await services.sync.createFolder(deviceId, await readJson(request)) }); return; }
     if (method === 'POST' && pathname === '/api/sync/mutations') { sendJson(response, 200, { data: await services.sync.mutation(deviceId, await readJson(request)) }); return; }
     if (method === 'POST' && pathname === '/api/sync/uploads') { sendJson(response, 201, { data: await services.sync.startUpload(deviceId, await readJson(request)) }); return; }

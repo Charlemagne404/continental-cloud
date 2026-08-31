@@ -2,7 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { ActivityEvent, ChangeEvent, FileNode, JobStatus, SavedSearch, SyncDevice, SyncMapping, SyncOperation, Tag, UploadSession } from '../shared/types.js';
+import { type ActivityEvent, type ChangeEvent, type FileNode, type JobStatus, type SavedSearch, type SyncDevice, type SyncMapping, type SyncOperation, type SyncPairing, type SyncPolicy, type SyncProgress, type Tag, type UploadSession } from '../shared/types.js';
+import { normalizeSyncPolicy } from '../shared/sync-policy.js';
 import type { DiskEntry } from './storage.js';
 import { parentPath } from './paths.js';
 
@@ -64,8 +65,14 @@ export class MetadataDatabase {
         id TEXT PRIMARY KEY, device_id TEXT NOT NULL REFERENCES sync_devices(id) ON DELETE CASCADE,
         cloud_path TEXT NOT NULL, local_path TEXT NOT NULL, paused INTEGER NOT NULL DEFAULT 0,
         last_processed_change INTEGER NOT NULL DEFAULT 0, last_sync_at TEXT, status TEXT NOT NULL DEFAULT 'idle', last_error TEXT,
+        policy TEXT NOT NULL DEFAULT '{}', progress TEXT,
         UNIQUE(device_id, cloud_path)
       );
+      CREATE TABLE IF NOT EXISTS sync_pairings (
+        id TEXT PRIMARY KEY, code_hash TEXT NOT NULL UNIQUE, cloud_path TEXT NOT NULL, policy TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL, expires_at TEXT NOT NULL, claimed_at TEXT, device_id TEXT
+      );
+      CREATE INDEX IF NOT EXISTS sync_pairings_expiry ON sync_pairings(expires_at, claimed_at);
       CREATE TABLE IF NOT EXISTS sync_idempotency (
         key TEXT PRIMARY KEY, device_id TEXT NOT NULL REFERENCES sync_devices(id) ON DELETE CASCADE,
         kind TEXT NOT NULL, result TEXT, created_at TEXT NOT NULL
@@ -92,6 +99,8 @@ export class MetadataDatabase {
       'ALTER TABLE change_journal ADD COLUMN revision INTEGER',
       'ALTER TABLE change_journal ADD COLUMN checksum TEXT',
       'ALTER TABLE change_journal ADD COLUMN device_id TEXT',
+      'ALTER TABLE sync_mappings ADD COLUMN policy TEXT NOT NULL DEFAULT \'{}\'',
+      'ALTER TABLE sync_mappings ADD COLUMN progress TEXT',
     ]) { try { this.db.exec(statement); } catch (error: unknown) { if (!String(error).includes('duplicate column name')) throw error; } }
   }
 
@@ -324,16 +333,17 @@ export class MetadataDatabase {
   listSyncDevices(): SyncDevice[] { return this.db.prepare('SELECT * FROM sync_devices ORDER BY last_seen_at DESC').all().map(device); }
   revokeSyncDevice(id: string): boolean { return Number(this.db.prepare('UPDATE sync_devices SET revoked_at=? WHERE id=? AND revoked_at IS NULL').run(now(), id).changes) === 1; }
   touchSyncDevice(id: string): void { this.db.prepare('UPDATE sync_devices SET last_seen_at=? WHERE id=? AND revoked_at IS NULL').run(now(), id); }
-  upsertSyncMapping(input: { id: string; deviceId: string; cloudPath: string; localPath: string; paused?: boolean }): SyncMapping {
+  upsertSyncMapping(input: { id: string; deviceId: string; cloudPath: string; localPath: string; paused?: boolean; policy?: SyncPolicy }): SyncMapping {
+    const policy = normalizeSyncPolicy(input.policy);
     const existing = this.db.prepare('SELECT id FROM sync_mappings WHERE device_id=? AND cloud_path=?').get(input.deviceId, input.cloudPath) as { id: string } | undefined;
     if (existing && existing.id !== input.id) {
-      this.db.prepare('UPDATE sync_mappings SET local_path=?,paused=? WHERE id=?').run(input.localPath, Number(input.paused === true), existing.id);
+      this.db.prepare('UPDATE sync_mappings SET local_path=?,paused=?,policy=? WHERE id=?').run(input.localPath, Number(input.paused === true), JSON.stringify(policy), existing.id);
       return this.getSyncMapping(existing.id)!;
     }
-    this.db.prepare(`INSERT INTO sync_mappings (id,device_id,cloud_path,local_path,paused,last_processed_change,last_sync_at,status,last_error)
-      VALUES (?,?,?,?,?,0,NULL,'idle',NULL)
-      ON CONFLICT(id) DO UPDATE SET cloud_path=excluded.cloud_path,local_path=excluded.local_path,paused=excluded.paused`)
-      .run(input.id, input.deviceId, input.cloudPath, input.localPath, Number(input.paused === true));
+    this.db.prepare(`INSERT INTO sync_mappings (id,device_id,cloud_path,local_path,paused,last_processed_change,last_sync_at,status,last_error,policy,progress)
+      VALUES (?,?,?,?,?,0,NULL,'idle',NULL,?,NULL)
+      ON CONFLICT(id) DO UPDATE SET cloud_path=excluded.cloud_path,local_path=excluded.local_path,paused=excluded.paused,policy=excluded.policy`)
+      .run(input.id, input.deviceId, input.cloudPath, input.localPath, Number(input.paused === true), JSON.stringify(policy));
     return this.getSyncMapping(input.id)!;
   }
   getSyncMapping(id: string): SyncMapping | undefined {
@@ -344,13 +354,28 @@ export class MetadataDatabase {
     const rows = deviceId ? this.db.prepare('SELECT * FROM sync_mappings WHERE device_id=? ORDER BY cloud_path').all(deviceId) : this.db.prepare('SELECT * FROM sync_mappings ORDER BY cloud_path').all();
     return rows.map(mapping);
   }
-  updateSyncMapping(id: string, input: { paused?: boolean; lastProcessedChange?: number; status?: string; lastError?: string | null }): SyncMapping | undefined {
+  updateSyncMapping(id: string, input: { paused?: boolean; lastProcessedChange?: number; status?: string; lastError?: string | null; progress?: SyncProgress | null }): SyncMapping | undefined {
     const current = this.getSyncMapping(id); if (!current) return undefined;
-    this.db.prepare('UPDATE sync_mappings SET paused=?,last_processed_change=?,last_sync_at=?,status=?,last_error=? WHERE id=?')
-      .run(Number(input.paused ?? current.paused), input.lastProcessedChange ?? current.lastProcessedChange, now(), input.status ?? current.status, input.lastError === undefined ? current.lastError : input.lastError, id);
+    this.db.prepare('UPDATE sync_mappings SET paused=?,last_processed_change=?,last_sync_at=?,status=?,last_error=?,progress=? WHERE id=?')
+      .run(Number(input.paused ?? current.paused), input.lastProcessedChange ?? current.lastProcessedChange, now(), input.status ?? current.status, input.lastError === undefined ? current.lastError : input.lastError, input.progress === undefined ? (current.progress ? JSON.stringify(current.progress) : null) : input.progress ? JSON.stringify(input.progress) : null, id);
     const next = this.getSyncMapping(id)!;
     this.db.prepare('UPDATE sync_devices SET last_processed_change=MAX(last_processed_change,?),last_seen_at=? WHERE id=?').run(next.lastProcessedChange, now(), next.deviceId);
     return next;
+  }
+  createSyncPairing(input: { id: string; codeHash: string; cloudPath: string; policy: SyncPolicy; createdAt: string; expiresAt: string }): SyncPairing {
+    this.db.prepare('INSERT INTO sync_pairings (id,code_hash,cloud_path,policy,created_at,expires_at,claimed_at,device_id) VALUES (?,?,?,?,?, ?,NULL,NULL)')
+      .run(input.id, input.codeHash, input.cloudPath, JSON.stringify(input.policy), input.createdAt, input.expiresAt);
+    return this.getSyncPairing(input.id)!;
+  }
+  getSyncPairing(id: string): SyncPairing | undefined {
+    const row = this.db.prepare('SELECT * FROM sync_pairings WHERE id=?').get(id) as any;
+    return row ? pairing(row) : undefined;
+  }
+  claimSyncPairing(codeHash: string, at: string, deviceId: string): SyncPairing | undefined {
+    const row = this.db.prepare('SELECT * FROM sync_pairings WHERE code_hash=? AND claimed_at IS NULL AND expires_at>?').get(codeHash, at) as any;
+    if (!row) return undefined;
+    const result = this.db.prepare('UPDATE sync_pairings SET claimed_at=?,device_id=? WHERE id=? AND claimed_at IS NULL AND expires_at>?').run(at, deviceId, row.id, at);
+    return Number(result.changes) === 1 ? this.getSyncPairing(row.id) : undefined;
   }
   listNodesByPrefix(relativePath: string): FileNode[] {
     return (this.db.prepare('SELECT * FROM nodes WHERE trashed_at IS NULL AND (relative_path=? OR relative_path LIKE ?) ORDER BY LENGTH(relative_path),relative_path COLLATE NOCASE').all(relativePath, relativePath ? `${relativePath}/%` : '%') as NodeRow[]).map(node);
@@ -410,6 +435,19 @@ function operationFor(action: string): SyncOperation {
   return 'modify';
 }
 function device(row: any): SyncDevice { return { id: row.id, name: row.name, platform: row.platform, clientVersion: row.client_version, createdAt: row.created_at, lastSeenAt: row.last_seen_at, lastProcessedChange: Number(row.last_processed_change), revokedAt: row.revoked_at }; }
-function mapping(row: any): SyncMapping { return { id: row.id, deviceId: row.device_id, cloudPath: row.cloud_path, localPath: row.local_path, paused: Boolean(row.paused), lastProcessedChange: Number(row.last_processed_change), lastSyncAt: row.last_sync_at, status: row.status, lastError: row.last_error }; }
+function mapping(row: any): SyncMapping { return { id: row.id, deviceId: row.device_id, cloudPath: row.cloud_path, localPath: row.local_path, policy: parsePolicy(row.policy), paused: Boolean(row.paused), lastProcessedChange: Number(row.last_processed_change), lastSyncAt: row.last_sync_at, status: row.status, lastError: row.last_error, progress: parseProgress(row.progress) }; }
+function pairing(row: any): SyncPairing { return { id: row.id, cloudPath: row.cloud_path, policy: parsePolicy(row.policy), createdAt: row.created_at, expiresAt: row.expires_at, claimedAt: row.claimed_at, deviceId: row.device_id }; }
+function parsePolicy(value: unknown): SyncPolicy {
+  try {
+    return normalizeSyncPolicy(typeof value === 'string' ? JSON.parse(value) : value);
+  } catch { /* old or malformed metadata receives the safe default below */ }
+  return normalizeSyncPolicy(undefined);
+}
+function parseProgress(value: unknown): SyncProgress | null {
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return parsed && typeof parsed === 'object' ? { ...(parsed as object), excludedFolders: typeof (parsed as Partial<SyncProgress>).excludedFolders === 'number' ? (parsed as Partial<SyncProgress>).excludedFolders : 0 } as SyncProgress : null;
+  } catch { return null; }
+}
 
 export function metadataPath(storageRoot: string): string { return join(storageRoot, '.continental', 'metadata.db'); }

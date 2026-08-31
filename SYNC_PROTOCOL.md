@@ -2,13 +2,19 @@
 
 Continental Cloud Sync is a trusted-device protocol layered over the private Continental Cloud API. The reference Node daemon runs on Windows, macOS, and Linux, and is designed for a Tailscale-oriented deployment. It uses the normal `X-Continental-Token` authentication header. Sync endpoints additionally require `X-Continental-Device` after registration. Devices never mount or receive direct access to the NAS.
 
-## Device and mapping lifecycle
+## Pairing, device, and mapping lifecycle
+
+The web console can create a short-lived pairing request with `POST /api/sync/pairing`. The server stores only a SHA-256 hash of the displayed six-block code, plus the selected cloud path and policy. The target device then submits the code, its token, a locally generated device UUID, and the intended local folder to `POST /api/sync/pairing/claim`. A successful claim marks the code used, registers the trusted device, and creates the mapping. A code cannot be claimed twice and expires after 15 minutes.
+
+Without pairing, a client may use the explicit lifecycle:
 
 1. Generate and persist a UUID locally.
 2. `POST /api/sync/devices` with `deviceId`, `name`, `platform`, and `clientVersion`.
-3. `POST /api/sync/mappings` with a local mapping UUID, `cloudPath`, `localPath`, and `paused` state.
+3. `POST /api/sync/mappings` with a local mapping UUID, `cloudPath`, `localPath`, `paused` state, and `policy`.
 4. On first use only, request `GET /api/sync/snapshot?path=<cloud path>`. Apply it safely, record its cursor, and acknowledge it through `POST /api/sync/ack`.
 5. Thereafter request `GET /api/sync/changes?after=<cursor>&limit=<1..1000>`. The response has ordered `changes`, `nextCursor`, and `hasMore`; keep paging before advancing past a page.
+
+The reference client offers two policies. `project` is the default and excludes common dependency, virtual-environment, build, cache, coverage, and temporary paths; `exact` has no policy exclusions and still applies the normal symlink, traversal, and platform-name safety checks. Excluded local paths are never uploaded or deleted remotely, and an excluded remote path is never downloaded.
 
 The server stores device name/platform/version, last seen time, last processed change, and mapping state. A revoked device receives a forbidden response and must create a new identity; revocation is available through `DELETE /api/sync/devices/:id`.
 
@@ -34,6 +40,8 @@ Operations are `create`, `modify`, `delete`, `rename`, `move`, `folder_create`, 
 
 Clients may ignore their own `deviceId` changes after updating their local state, but must still advance their cursor. They must acknowledge a cursor only after every relevant local operation through that sequence is safely complete. A missing node while processing an earlier modification is valid if a later delete in the same journal window superseded it.
 
+`SyncProgress` is an advisory persisted mapping summary. It reports initial versus routine sync, scan/transfer/completion/error phase, file/folder totals and completions, bytes, and excluded files/folders. A client may send it with `POST /api/sync/ack`; the journal cursor remains the correctness boundary.
+
 ## Writes and conflicts
 
 Files use the dedicated resumable upload route:
@@ -55,5 +63,6 @@ When a supplied `nodeId`/`baseRevision` no longer matches the active remote node
 - Download to a same-directory temporary file, verify the server checksum when supplied, then atomically rename.
 - Keep local edits made while offline queued. On reconnection, fetch the journal, then submit queued changes with their original base revisions before applying remote writes.
 - Send local deletes to sync mutations so the server places the item in Continental Cloud Trash. A restore is an ordinary `restore` journal event.
+- Install desktop auto-start only for the current user: launchd on macOS, a systemd user unit on Linux, or a limited Windows logon task. The installer never requests administrator/root access and does not remove the sync config during uninstall.
 
 No binary-delta protocol is defined in v1. File bytes are streamed in bounded chunks, and a matching SHA-256/current revision avoids a needless transfer.

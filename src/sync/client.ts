@@ -5,7 +5,8 @@ import { homedir, platform as hostPlatform } from 'node:os';
 import { basename, dirname, extname, join, relative, resolve, sep, win32 as windowsPath } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
-import type { ChangeEvent, FileNode, SyncMapping, UploadSession } from '../shared/types.js';
+import type { ChangeEvent, FileNode, SyncMapping, SyncPairingClaim, SyncPolicy, SyncProgress, UploadSession } from '../shared/types.js';
+import { defaultSyncPolicy, normalizeSyncPolicy, syncPathExcluded } from '../shared/sync-policy.js';
 
 export const SYNC_CLIENT_VERSION = '0.1.0';
 const CONFIG_NAME = 'config.json';
@@ -42,6 +43,7 @@ export interface LocalMapping {
   rootRealPath: string;
   rootDev: number;
   rootIno?: number;
+  policy: SyncPolicy;
   paused: boolean;
   initialized: boolean;
   cursor: number;
@@ -52,6 +54,7 @@ export interface LocalMapping {
   lastSyncAt?: string;
   lastReconcileAt?: string;
   transfer?: { direction: 'upload' | 'download'; path: string; completed: number; total: number };
+  progress: SyncProgress | null;
   conflicts: Array<{ path: string; at: string; detail: string }>;
 }
 export interface SyncClientConfig {
@@ -107,7 +110,7 @@ export function configPath(home = defaultSyncHome()): string { return join(home,
 export async function loadSyncConfig(path = configPath()): Promise<SyncClientConfig> {
   const raw = JSON.parse(await readFile(path, 'utf8')) as SyncClientConfig;
   if (raw.schemaVersion !== 1 || !raw.deviceId || !raw.serverUrl || !Array.isArray(raw.mappings)) throw new Error('Sync configuration is invalid. Run cloud-sync init again.');
-  return raw;
+  return { ...raw, mappings: raw.mappings.map((mapping) => ({ ...mapping, policy: normalizeSyncPolicy(mapping.policy), progress: mapping.progress ?? null })) };
 }
 export async function saveSyncConfig(config: SyncClientConfig, path = configPath()): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
@@ -138,7 +141,7 @@ export class SyncDaemon {
 
   async register(): Promise<void> {
     await this.api.json('/sync/devices', 'POST', { deviceId: this.config.deviceId, name: this.config.deviceName, platform: this.config.platform, clientVersion: this.config.clientVersion });
-    for (const mapping of this.config.mappings) await this.api.json('/sync/mappings', 'POST', { id: mapping.id, cloudPath: mapping.cloudPath, localPath: mapping.localPath, paused: mapping.paused });
+    for (const mapping of this.config.mappings) await this.api.json('/sync/mappings', 'POST', { id: mapping.id, cloudPath: mapping.cloudPath, localPath: mapping.localPath, paused: mapping.paused, policy: mapping.policy });
   }
   async syncNow(mappingId?: string, scan = true): Promise<void> {
     const previous = this.syncQueue;
@@ -183,13 +186,15 @@ export class SyncDaemon {
     try { await this.register(); await this.api.json(`/sync/mappings/${mapping.id}`, 'PATCH', { paused }); } catch (error) { this.setError(mapping, error); }
     await this.persist(); this.refreshWatchers();
   }
-  status(): Array<Pick<LocalMapping, 'id' | 'cloudPath' | 'localPath' | 'paused' | 'status' | 'lastError' | 'lastSyncAt' | 'pending' | 'conflicts' | 'transfer'>> {
-    return this.config.mappings.map(({ id, cloudPath, localPath, paused, status, lastError, lastSyncAt, pending, conflicts, transfer }) => ({ id, cloudPath, localPath, paused, status, lastError, lastSyncAt, pending, conflicts, transfer }));
+  status(): Array<Pick<LocalMapping, 'id' | 'cloudPath' | 'localPath' | 'policy' | 'paused' | 'status' | 'lastError' | 'lastSyncAt' | 'pending' | 'conflicts' | 'transfer' | 'progress'>> {
+    return this.config.mappings.map(({ id, cloudPath, localPath, policy, paused, status, lastError, lastSyncAt, pending, conflicts, transfer, progress }) => ({ id, cloudPath, localPath, policy, paused, status, lastError, lastSyncAt, pending, conflicts, transfer, progress }));
   }
 
   private async syncMapping(mapping: LocalMapping, scan: boolean, reconciled = false): Promise<void> {
     if (mapping.paused) { mapping.status = 'paused'; return; }
+    const initial = !mapping.initialized;
     mapping.status = 'syncing'; mapping.lastError = undefined; this.configDirty = true;
+    mapping.progress = startProgress(initial);
     try {
       await this.assertRoot(mapping);
       if (!mapping.initialized) await this.bootstrap(mapping);
@@ -200,14 +205,21 @@ export class SyncDaemon {
       await this.flushPending(mapping);
       await this.applyChanges(mapping, pendingChanges);
       mapping.status = 'idle'; mapping.transfer = undefined; mapping.lastSyncAt = new Date().toISOString(); mapping.lastReconcileAt = scan || reconciled ? mapping.lastSyncAt : mapping.lastReconcileAt;
-    } catch (error) { this.setError(mapping, error); }
+      mapping.progress = finishProgress(mapping.progress);
+      await this.ack(mapping);
+    } catch (error) { this.setError(mapping, error); try { await this.ack(mapping); } catch { /* preserve the local error when the server is unavailable */ } }
     finally { this.configDirty = true; }
   }
 
   private async bootstrap(mapping: LocalMapping): Promise<void> {
     const snapshot = await this.api.json<{ cursor: number; nodes: FileNode[] }>(`/sync/snapshot?path=${encodeURIComponent(mapping.cloudPath)}`);
+    const included = snapshot.nodes.filter((node) => {
+      const path = cloudRelative(mapping, node.relativePath); return path !== undefined && path !== '' && !syncPathExcluded(path, mapping.policy);
+    });
+    mapping.progress = mergeProgress(mapping.progress, { phase: 'syncing', filesTotal: Math.max(mapping.progress?.filesTotal ?? 0, included.filter((node) => !node.isDirectory).length), foldersTotal: Math.max(mapping.progress?.foldersTotal ?? 0, included.filter((node) => node.isDirectory).length) });
     for (const node of snapshot.nodes) {
       const path = cloudRelative(mapping, node.relativePath); if (path === undefined || path === '') continue;
+      if (syncPathExcluded(path, mapping.policy)) continue;
       await this.applyNode(mapping, node, path, true);
     }
     mapping.cursor = snapshot.cursor; mapping.initialized = true; this.configDirty = true;
@@ -231,7 +243,7 @@ export class SyncDaemon {
     }
     if (changes.length) await this.ack(mapping);
   }
-  private async ack(mapping: LocalMapping): Promise<void> { await this.api.json('/sync/ack', 'POST', { mappingId: mapping.id, cursor: mapping.cursor, status: mapping.status, error: mapping.lastError ?? null }); }
+  private async ack(mapping: LocalMapping): Promise<void> { await this.api.json('/sync/ack', 'POST', { mappingId: mapping.id, cursor: mapping.cursor, status: mapping.status, error: mapping.lastError ?? null, progress: mapping.progress }); }
 
   private async applyChange(mapping: LocalMapping, change: ChangeEvent): Promise<void> {
     const path = cloudRelative(mapping, change.path); const previous = cloudRelative(mapping, change.previousPath);
@@ -239,6 +251,10 @@ export class SyncDaemon {
       const target = this.findPathByNode(mapping, change.nodeId) ?? path ?? previous;
       if (target === '') await this.removeRemoteRoot(mapping);
       else if (target !== undefined) await this.removeRemoteLocal(mapping, target, change.nodeId);
+      return;
+    }
+    if (path !== undefined && syncPathExcluded(path, mapping.policy)) {
+      if (previous && !syncPathExcluded(previous, mapping.policy)) await this.removeRemoteLocal(mapping, previous, change.nodeId);
       return;
     }
     if (!change.nodeId) return;
@@ -258,6 +274,7 @@ export class SyncDaemon {
     await this.applyNode(mapping, node, localPath, false, previous);
   }
   private async applyNode(mapping: LocalMapping, node: FileNode, target: string, bootstrap: boolean, previous?: string): Promise<void> {
+    if (syncPathExcluded(target, mapping.policy)) return;
     const caseCollision = Object.keys(mapping.entries).find((path) => path !== target && comparableSyncPath(path) === comparableSyncPath(target));
     if (caseCollision) throw new Error(`Remote path ${target} collides with ${caseCollision} on this device; no files were changed.`);
     const trackedPath = this.findPathByNode(mapping, node.id);
@@ -282,8 +299,19 @@ export class SyncDaemon {
   }
 
   private async scanLocal(mapping: LocalMapping): Promise<void> {
-    const actual = await walkLocal(mapping.localPath);
+    const walked = await walkLocal(mapping.localPath, mapping.policy);
+    const actual = walked.entries;
     const known = mapping.entries;
+    for (const path of Object.keys(known)) if (syncPathExcluded(path, mapping.policy)) delete known[path];
+    mapping.progress = mergeProgress(mapping.progress, {
+      phase: 'scanning',
+      filesTotal: [...actual.values()].filter((entry) => !entry.isDirectory).length,
+      foldersTotal: [...actual.values()].filter((entry) => entry.isDirectory).length,
+      bytesTotal: [...actual.values()].filter((entry) => !entry.isDirectory).reduce((total, entry) => total + entry.size, 0),
+      excludedFiles: walked.excludedFiles,
+      excludedFolders: walked.excludedFolders,
+      excludedBytes: walked.excludedBytes,
+    });
     const missing = Object.entries(known).filter(([path]) => !actual.has(path));
     const added = [...actual.entries()].filter(([path]) => !known[path]);
     const consumed = new Set<string>();
@@ -364,10 +392,12 @@ export class SyncDaemon {
       mapping.conflicts.unshift({ path: conflictLocal, at: new Date().toISOString(), detail: 'Both versions were kept because another device changed the same file.' });
       mapping.conflicts.splice(50);
     } else this.setEntry(mapping, operation.path, result.node, await localEntry(full));
+    mapping.progress = mergeProgress(mapping.progress, { phase: 'syncing', filesDone: (mapping.progress?.filesDone ?? 0) + 1, bytesDone: (mapping.progress?.bytesDone ?? 0) + info.size });
   }
   private async createFolder(mapping: LocalMapping, operation: PendingOperation): Promise<void> {
     const node = await this.api.json<FileNode>('/sync/folders', 'POST', { parentPath: cloudParent(mapping, operation.path), name: basename(operation.path) });
     this.setEntry(mapping, operation.path, node, await localEntry(await this.safePath(mapping, operation.path)));
+    mapping.progress = mergeProgress(mapping.progress, { phase: 'syncing', foldersDone: (mapping.progress?.foldersDone ?? 0) + 1 });
   }
   private async mutate(mapping: LocalMapping, operation: PendingOperation, operationName: 'delete'): Promise<void> {
     await this.api.json('/sync/mutations', 'POST', { operation: operationName, nodeId: operation.nodeId, baseRevision: operation.baseRevision });
@@ -395,6 +425,7 @@ export class SyncDaemon {
     mapping.transfer = { direction: 'download', path, completed: node.size, total: node.size }; this.reportTransfer(mapping);
     if (node.checksum && await sha256(temporary) !== node.checksum) { await rm(temporary, { force: true }); throw new Error(`Downloaded checksum did not match for ${path}.`); }
     await rename(temporary, destination);
+    mapping.progress = mergeProgress(mapping.progress, { phase: 'syncing', filesDone: (mapping.progress?.filesDone ?? 0) + 1, bytesDone: (mapping.progress?.bytesDone ?? 0) + node.size });
   }
   private async removeRemoteLocal(mapping: LocalMapping, path: string, nodeId: string | null): Promise<void> {
     const knownPath = mapping.entries[path] ? path : nodeId ? this.findPathByNode(mapping, nodeId) : undefined;
@@ -440,7 +471,7 @@ export class SyncDaemon {
     }
     await rename(source, target);
   }
-  private async ensureDirectory(mapping: LocalMapping, path: string): Promise<void> { const target = await this.safePath(mapping, path); await mkdir(target, { recursive: true, mode: 0o700 }); await this.assertSafeParent(mapping, target); if (this.running) this.watcherDirty = true; }
+  private async ensureDirectory(mapping: LocalMapping, path: string): Promise<void> { const target = await this.safePath(mapping, path); await mkdir(target, { recursive: true, mode: 0o700 }); await this.assertSafeParent(mapping, target); if (this.running) this.watcherDirty = true; mapping.progress = mergeProgress(mapping.progress, { phase: 'syncing', foldersDone: (mapping.progress?.foldersDone ?? 0) + 1 }); }
   private async isDirty(mapping: LocalMapping, path: string, entry: LocalEntry): Promise<boolean> {
     try { const current = await localEntry(await this.safePath(mapping, path)); return current.size !== entry.size || current.mtimeMs !== entry.mtimeMs || current.ino !== entry.ino || current.dev !== entry.dev || current.isDirectory !== entry.isDirectory; } catch { return false; }
   }
@@ -457,7 +488,7 @@ export class SyncDaemon {
   private async assertSafeParent(mapping: LocalMapping, parent: string): Promise<void> { if (!contained(mapping.localPath, parent)) throw new Error('Local operation escapes sync root.'); const rel = relative(mapping.localPath, parent); let current = mapping.localPath; for (const segment of rel.split(sep).filter(Boolean)) { current = join(current, segment); const info = await lstat(current); if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`Local sync path contains an unsafe parent: ${rel}`); } }
   private mapping(id: string): LocalMapping { const mapping = this.config.mappings.find((item) => item.id === id); if (!mapping) throw new Error('Sync mapping not found.'); return mapping; }
   private matchMappings(id?: string): LocalMapping[] { return id ? [this.mapping(id)] : this.config.mappings; }
-  private setError(mapping: LocalMapping, error: unknown): void { mapping.status = error instanceof SyncApiError && !error.status ? 'offline' : 'error'; mapping.lastError = error instanceof Error ? error.message : 'Unknown sync error.'; this.configDirty = true; }
+  private setError(mapping: LocalMapping, error: unknown): void { mapping.status = error instanceof SyncApiError && !error.status ? 'offline' : 'error'; mapping.lastError = error instanceof Error ? error.message : 'Unknown sync error.'; mapping.progress = mergeProgress(mapping.progress, { phase: 'error' }); this.configDirty = true; }
   private reportTransfer(mapping: LocalMapping): void { const transfer = mapping.transfer; if (!transfer || !process.stdout.isTTY) return; const percent = transfer.total ? Math.min(100, Math.round((transfer.completed / transfer.total) * 100)) : 100; process.stdout.write(`\r${transfer.direction === 'upload' ? 'Uploading' : 'Downloading'} ${transfer.path} ${percent}%   `); if (percent === 100) process.stdout.write('\n'); }
   private async persist(): Promise<void> { if (this.configDirty) { await saveSyncConfig(this.config, this.configPath); this.configDirty = false; } }
   private refreshWatchers(): void {
@@ -468,8 +499,8 @@ export class SyncDaemon {
       try {
         if (syncWatcherMode() === 'recursive') {
           try { attach(mapping.localPath, true); }
-          catch { const directories = localDirectories(mapping.localPath); if (!directories.length) throw new Error('Unable to watch the sync root. It may be missing or inaccessible.'); for (const directory of directories) attach(directory, false); }
-        } else { const directories = localDirectories(mapping.localPath); if (!directories.length) throw new Error('Unable to watch the sync root. It may be missing or inaccessible.'); for (const directory of directories) attach(directory, false); }
+          catch { const directories = localDirectories(mapping.localPath, mapping.policy); if (!directories.length) throw new Error('Unable to watch the sync root. It may be missing or inaccessible.'); for (const directory of directories) attach(directory, false); }
+        } else { const directories = localDirectories(mapping.localPath, mapping.policy); if (!directories.length) throw new Error('Unable to watch the sync root. It may be missing or inaccessible.'); for (const directory of directories) attach(directory, false); }
         this.watchers.set(mapping.id, watchers);
       } catch (error) {
         for (const watcher of watchers) watcher.close();
@@ -496,28 +527,29 @@ export class SyncDaemon {
   private closeWatchers(): void { for (const watchers of this.watchers.values()) for (const watcher of watchers) watcher.close(); this.watchers.clear(); for (const timer of this.scheduled.values()) clearTimeout(timer); this.scheduled.clear(); }
 }
 
-export async function createMapping(config: SyncClientConfig, cloudPath: string, localPath: string): Promise<LocalMapping> {
+export async function createMapping(config: SyncClientConfig, cloudPath: string, localPath: string, id: string = randomUUID(), policy: unknown = defaultSyncPolicy()): Promise<LocalMapping> {
   cloudPath = cloudPath.replace(/^\/+|\/+$/g, ''); validateCloudPath(cloudPath); await mkdir(localPath, { recursive: true, mode: 0o700 }); const info = await lstat(localPath);
   if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('A sync mapping must point at a real local directory, never a symlink.');
-  const mapping: LocalMapping = { id: randomUUID(), cloudPath, localPath: resolve(localPath), rootRealPath: await realpath(localPath), rootDev: Number(info.dev), rootIno: Number(info.ino), paused: false, initialized: false, cursor: 0, entries: {}, pending: [], status: 'idle', conflicts: [] };
+  const mapping: LocalMapping = { id, cloudPath, localPath: resolve(localPath), rootRealPath: await realpath(localPath), rootDev: Number(info.dev), rootIno: Number(info.ino), policy: normalizeSyncPolicy(policy), paused: false, initialized: false, cursor: 0, entries: {}, pending: [], status: 'idle', progress: null, conflicts: [] };
   config.mappings.push(mapping); return mapping;
 }
 
-async function walkLocal(root: string): Promise<Map<string, LocalEntry>> {
-  const result = new Map<string, LocalEntry>();
+async function walkLocal(root: string, policy: SyncPolicy): Promise<{ entries: Map<string, LocalEntry>; excludedFiles: number; excludedFolders: number; excludedBytes: number }> {
+  const result = new Map<string, LocalEntry>(); let excludedFiles = 0; let excludedFolders = 0; let excludedBytes = 0;
   async function visit(folder: string, prefix = ''): Promise<void> {
     for (const item of await readdir(folder, { withFileTypes: true })) {
-      if (item.name === '.DS_Store' || item.name.includes(PART_SUFFIX) || item.name.includes(RENAME_SUFFIX)) continue;
+      if (item.name.includes(PART_SUFFIX) || item.name.includes(RENAME_SUFFIX)) continue;
       const path = prefix ? `${prefix}/${item.name}` : item.name; validateRelative(path); const full = join(folder, item.name); const info = await lstat(full);
       if (info.isSymbolicLink()) throw new Error(`Symlink found in sync folder: ${path}. It was not followed.`);
       if (!info.isFile() && !info.isDirectory()) throw new Error(`Unsupported local item in sync folder: ${path}.`);
+      if (syncPathExcluded(path, policy)) { if (info.isFile()) { excludedFiles++; excludedBytes += info.size; } else excludedFolders++; continue; }
       result.set(path, { size: info.size, mtimeMs: info.mtimeMs, isDirectory: info.isDirectory(), ino: Number(info.ino), dev: Number(info.dev) });
       if (info.isDirectory()) await visit(full, path);
     }
   }
-  await visit(root); return result;
+  await visit(root); return { entries: result, excludedFiles, excludedFolders, excludedBytes };
 }
-function localDirectories(root: string): string[] {
+function localDirectories(root: string, policy: SyncPolicy): string[] {
   const paths: string[] = [root]; const next = [root]; let rootReal: string;
   try { rootReal = realpathSync(root); } catch { return []; }
   while (next.length) {
@@ -525,6 +557,7 @@ function localDirectories(root: string): string[] {
     try {
       for (const item of readdirSync(directory, { withFileTypes: true })) {
         if (!item.isDirectory() || item.isSymbolicLink()) continue;
+        const relativePath = relative(rootReal, join(directory, item.name)).split(sep).filter(Boolean).join('/'); if (syncPathExcluded(relativePath, policy)) continue;
         const path = join(directory, item.name); const info = lstatSync(path); if (info.isSymbolicLink()) continue;
         const real = realpathSync(path); if (!contained(rootReal, real)) continue;
         paths.push(path); next.push(path);
@@ -557,3 +590,33 @@ function hasStableLocalIdentity(entry: LocalEntry): boolean { return entry.dev !
 function sameLocalIdentity(left: LocalEntry, right: LocalEntry): boolean { return left.isDirectory === right.isDirectory && hasStableLocalIdentity(left) && hasStableLocalIdentity(right) && left.dev === right.dev && left.ino === right.ino; }
 function isAbortError(error: unknown): boolean { return error instanceof Error && error.name === 'AbortError'; }
 function isMissingPathError(error: unknown): boolean { return error instanceof Error && 'code' in error && (error as { code?: string }).code === 'ENOENT'; }
+
+function startProgress(initial: boolean): SyncProgress {
+  const timestamp = new Date().toISOString();
+  return { phase: 'scanning', initial, filesTotal: 0, filesDone: 0, foldersTotal: 0, foldersDone: 0, bytesTotal: 0, bytesDone: 0, excludedFiles: 0, excludedFolders: 0, excludedBytes: 0, startedAt: timestamp, updatedAt: timestamp };
+}
+function mergeProgress(current: SyncProgress | null | undefined, patch: Partial<SyncProgress>): SyncProgress {
+  return { ...(current ?? startProgress(false)), ...patch, updatedAt: new Date().toISOString() };
+}
+function finishProgress(current: SyncProgress | null): SyncProgress {
+  return mergeProgress(current, {
+    phase: 'complete',
+    filesDone: Math.max(current?.filesDone ?? 0, current?.filesTotal ?? 0),
+    foldersDone: Math.max(current?.foldersDone ?? 0, current?.foldersTotal ?? 0),
+    bytesDone: Math.max(current?.bytesDone ?? 0, current?.bytesTotal ?? 0),
+    completedAt: new Date().toISOString(),
+  });
+}
+
+export async function claimSyncPairing(serverUrl: string, token: string, input: { code: string; deviceId: string; name: string; platform: string; clientVersion: string; localPath: string }): Promise<SyncPairingClaim> {
+  const parsed = new URL(serverUrl); if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Server URL must use http or https.');
+  if (!token || token.length < 12) throw new Error('A Continental Cloud token is required.');
+  let response: Response;
+  try {
+    response = await fetch(`${parsed.toString().replace(/\/$/, '')}/api/sync/pairing/claim`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Continental-Token': token }, body: JSON.stringify(input) });
+  } catch (error) { throw new SyncApiError(error instanceof Error ? error.message : 'Network request failed.'); }
+  const payload = await response.json().catch(() => undefined) as { data?: SyncPairingClaim; error?: { message?: string; code?: string } } | undefined;
+  if (!response.ok) throw new SyncApiError(payload?.error?.message ?? `Server returned HTTP ${response.status}.`, response.status, payload?.error?.code);
+  if (!payload?.data) throw new SyncApiError('Pairing response was empty.');
+  return payload.data;
+}

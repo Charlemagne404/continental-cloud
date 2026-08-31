@@ -6,7 +6,7 @@ It is designed to bind to loopback and sit behind a Tailscale-only Caddy listene
 
 ## What v0.1 includes
 
-- Responsive PWA file manager: grid/list, breadcrumbs, drag-and-drop multi-file uploads, progress, cancellation/retry, search, recents, favorites, metadata, activity, dark/light appearance, and mobile navigation.
+- Responsive PWA file manager: grid/list, breadcrumbs, nested folder uploads, drag-and-drop uploads, progress, cancellation/retry, search, recents, favorites, metadata, activity, dark/light appearance, and mobile navigation.
 - Direct disk storage with a private internal directory for SQLite metadata, chunk staging, thumbnails, historical versions, and trash.
 - Filesystem-backed create, rename, move, copy, download, trash/restore/permanent delete, image thumbnails, previews, and version restoration.
 - Chunked upload API that writes each request directly to a temporary disk file; incomplete data is never moved into `data/`.
@@ -129,6 +129,9 @@ GET    /api/uploads/:id                   inspect received chunks for a resumabl
 
 GET    /api/search?q=
 GET    /api/changes?after=&limit=         # monotonic change journal for sync clients
+POST   /api/sync/pairing                  # create a short-lived device pairing code
+GET    /api/sync/pairing/:id              # inspect pending/claimed/expired pairing status
+POST   /api/sync/pairing/claim            # claim a code with a device token and local folder
 POST   /api/sync/devices                  # register a trusted desktop device
 GET    /api/sync/devices                  # device and selected-folder status
 DELETE /api/sync/devices/:id              # revoke a device
@@ -162,13 +165,26 @@ Continental ID, multi-user authorization, sharing/public links, advanced media t
 
 The desktop client is a small native Node daemon for Windows, macOS, and Linux. It uses recursive `fs.watch` on Windows and macOS, watches each directory on Linux, listens to advisory server-sent change notifications, and falls back to a conservative ten-minute reconciliation. It does **not** poll and rescan the whole tree every few seconds. If a native recursive watcher is unavailable, it falls back to per-directory watchers and keeps the mapping safe.
 
+From a folder's details panel, choose **Set up sync**. Select **Coding projects** to omit common dependencies and generated trees (`node_modules`, virtual environments, build output, caches, and temporary files), or choose **Exact mirror** to include every safe file. The web app shows a one-time pairing code; it does not attempt to select or read a folder on another device.
+
 Install/build Continental Cloud normally, then on each device:
 
 ```bash
 cloud-sync init --server https://cloud.your-tailnet.ts.net --token 'your-cloud-token' --name 'MacBook'
 cloud-sync map add --cloud /Projects/Meridian --local "$HOME/Continental Cloud/Meridian"
-cloud-sync start
+cloud-sync install       # start automatically at user login
 ```
+
+For the web pairing flow, run the command shown by **Set up sync** on the target device:
+
+```bash
+cloud-sync pair --server https://cloud.your-tailnet.ts.net \
+  --token 'your-cloud-token' --code 'ABC123-DEF456-GHI789-JKL012-MNO345-PQR678' \
+  --local "$HOME/Continental Cloud/Meridian" --name 'MacBook'
+cloud-sync install
+```
+
+`cloud-sync pair` claims the code, registers this device, creates the selected mapping, and starts its initial sync. It reuses an existing local device identity when the platform config has already been initialized. Pairing codes expire after 15 minutes and are stored on the server only as hashes.
 
 In Windows PowerShell, use a normal Windows path, for example:
 
@@ -177,7 +193,7 @@ cloud-sync map add --cloud /Projects/Meridian --local "$env:USERPROFILE\Continen
 cloud-sync start
 ```
 
-Useful controls are `cloud-sync status`, `cloud-sync sync` for a manual run, `cloud-sync pause <mapping-id>`, and `cloud-sync resume <mapping-id>`. The device ID, selected mappings, cursor, local node/revision state, pending operations, and interrupted-transfer information are held in a restrictive config file under the platform config directory: `%LOCALAPPDATA%\Continental Cloud Sync` on Windows, `~/Library/Application Support/Continental Cloud Sync` on macOS, or `$XDG_CONFIG_HOME/continental-cloud-sync` on Linux. Use `--config <path>` for automation or isolated tests.
+Useful controls are `cloud-sync status`, `cloud-sync sync` for a manual run, `cloud-sync pause <mapping-id>`, and `cloud-sync resume <mapping-id>`. `cloud-sync install` installs a per-user launch agent, systemd user unit, or Windows logon task; `cloud-sync uninstall` removes only that auto-start registration and leaves the sync config and files untouched. The device ID, selected mappings, policy, cursor, local node/revision state, pending operations, progress summary, and interrupted-transfer information are held in a restrictive config file under the platform config directory: `%LOCALAPPDATA%\Continental Cloud Sync` on Windows, `~/Library/Application Support/Continental Cloud Sync` on macOS, or `$XDG_CONFIG_HOME/continental-cloud-sync` on Linux. Use `--config <path>` for automation or isolated tests.
 
 Mappings are selective and names need not match: cloud `/Projects/Meridian` can map to any safe local directory. The initial snapshot is only for mapping setup; routine synchronization consumes journal changes since the stored cursor. Downloads stream through an adjacent temporary file and atomically rename only after the checksum matches. A changed or missing local root, symlink, unsafe path, or device mount identity causes sync to stop rather than infer deletions.
 
