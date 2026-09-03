@@ -139,9 +139,31 @@ export class SyncDaemon {
 
   constructor(readonly config: SyncClientConfig, path = configPath()) { this.api = new SyncApi(config); this.configPath = path; }
 
-  async register(): Promise<void> {
+  async register(preserveLocalMappingState = false): Promise<Set<string>> {
+    const reconfigured = new Set<string>();
     await this.api.json('/sync/devices', 'POST', { deviceId: this.config.deviceId, name: this.config.deviceName, platform: this.config.platform, clientVersion: this.config.clientVersion });
-    for (const mapping of this.config.mappings) await this.api.json('/sync/mappings', 'POST', { id: mapping.id, cloudPath: mapping.cloudPath, localPath: mapping.localPath, paused: mapping.paused, policy: mapping.policy });
+    const remoteMappings = await this.api.json<SyncMapping[]>('/sync/mappings');
+    // The web console can add a mapping or pause one while the daemon is not
+    // running. Pull that state before publishing our local copy so the two
+    // ways of managing sync stay in agreement.
+    for (const remote of remoteMappings) {
+      const local = this.config.mappings.find((mapping) => mapping.id === remote.id || mapping.cloudPath === remote.cloudPath);
+      if (!local) {
+        const adopted = await createMapping(this.config, remote.cloudPath, expandHome(remote.localPath), remote.id, remote.policy);
+        adopted.paused = remote.paused;
+      }
+    }
+    for (const mapping of this.config.mappings) {
+      const remote = remoteMappings.find((item) => item.id === mapping.id || item.cloudPath === mapping.cloudPath);
+      if (remote) {
+        if (mapping.id !== remote.id) mapping.id = remote.id;
+        if (!preserveLocalMappingState) mapping.paused = remote.paused;
+        if (!sameLocalPath(resolve(expandHome(remote.localPath)), mapping.localPath) || remote.cloudPath !== mapping.cloudPath) { await this.adoptRemoteMapping(mapping, remote); reconfigured.add(mapping.id); }
+        mapping.policy = normalizeSyncPolicy(remote.policy);
+      }
+      await this.api.json('/sync/mappings', 'POST', { id: mapping.id, cloudPath: mapping.cloudPath, localPath: mapping.localPath, paused: mapping.paused, policy: mapping.policy });
+    }
+    return reconfigured;
   }
   async syncNow(mappingId?: string, scan = true): Promise<void> {
     const previous = this.syncQueue;
@@ -156,9 +178,10 @@ export class SyncDaemon {
     if (scan) for (const mapping of this.matchMappings(mappingId)) if (!mapping.paused && mapping.initialized) {
       try { await this.assertRoot(mapping); await this.scanLocal(mapping); preScanned.add(mapping.id); } catch (error) { this.setError(mapping, error); }
     }
-    try { await this.register(); }
+    let reconfigured = new Set<string>();
+    try { reconfigured = await this.register(); }
     catch (error) { for (const mapping of this.matchMappings(mappingId)) this.setError(mapping, error); await this.persist(); throw error; }
-    for (const mapping of this.matchMappings(mappingId)) await this.syncMapping(mapping, scan && !preScanned.has(mapping.id), preScanned.has(mapping.id));
+    for (const mapping of this.matchMappings(mappingId)) await this.syncMapping(mapping, scan && (!preScanned.has(mapping.id) || reconfigured.has(mapping.id)), preScanned.has(mapping.id));
     await this.persist();
   }
   async run(signal?: AbortSignal): Promise<void> {
@@ -183,7 +206,7 @@ export class SyncDaemon {
   async pause(mappingId: string, paused: boolean): Promise<void> {
     await this.syncQueue;
     const mapping = this.mapping(mappingId); mapping.paused = paused; mapping.status = paused ? 'paused' : 'idle'; this.configDirty = true;
-    try { await this.register(); await this.api.json(`/sync/mappings/${mapping.id}`, 'PATCH', { paused }); } catch (error) { this.setError(mapping, error); }
+    try { await this.register(true); await this.api.json(`/sync/mappings/${mapping.id}`, 'PATCH', { paused }); } catch (error) { this.setError(mapping, error); }
     await this.persist(); this.refreshWatchers();
   }
   status(): Array<Pick<LocalMapping, 'id' | 'cloudPath' | 'localPath' | 'policy' | 'paused' | 'status' | 'lastError' | 'lastSyncAt' | 'pending' | 'conflicts' | 'transfer' | 'progress'>> {
@@ -484,6 +507,25 @@ export class SyncDaemon {
     const real = await realpath(mapping.localPath); if (!sameLocalPath(real, mapping.rootRealPath) || info.dev !== mapping.rootDev || (mapping.rootIno !== undefined && Number(info.ino) !== mapping.rootIno)) throw new Error('Sync root identity changed (possibly an unmounted disk). Sync is paused to protect local files.');
     if (mapping.rootIno === undefined) { mapping.rootIno = Number(info.ino); this.configDirty = true; }
   }
+  private async adoptRemoteMapping(mapping: LocalMapping, remote: SyncMapping): Promise<void> {
+    if (mapping.pending.length) throw new Error('Finish the pending changes in this folder before changing its local location.');
+    const localPath = resolve(expandHome(remote.localPath));
+    await mkdir(localPath, { recursive: true, mode: 0o700 });
+    const info = await lstat(localPath);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`The selected local sync folder is not a real directory: ${localPath}`);
+    mapping.localPath = localPath;
+    mapping.rootRealPath = await realpath(localPath);
+    mapping.rootDev = Number(info.dev);
+    mapping.rootIno = Number(info.ino);
+    mapping.cloudPath = remote.cloudPath;
+    mapping.initialized = false;
+    mapping.cursor = 0;
+    mapping.entries = {};
+    mapping.pending = [];
+    mapping.transfer = undefined;
+    mapping.lastError = undefined;
+    this.configDirty = true;
+  }
   private async safePath(mapping: LocalMapping, path: string): Promise<string> { validateRelative(path); const target = resolve(mapping.localPath, ...path.split('/').filter(Boolean)); if (!contained(mapping.localPath, target)) throw new Error('Remote path escapes the local sync root.'); return target; }
   private async assertSafeParent(mapping: LocalMapping, parent: string): Promise<void> { if (!contained(mapping.localPath, parent)) throw new Error('Local operation escapes sync root.'); const rel = relative(mapping.localPath, parent); let current = mapping.localPath; for (const segment of rel.split(sep).filter(Boolean)) { current = join(current, segment); const info = await lstat(current); if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`Local sync path contains an unsafe parent: ${rel}`); } }
   private mapping(id: string): LocalMapping { const mapping = this.config.mappings.find((item) => item.id === id); if (!mapping) throw new Error('Sync mapping not found.'); return mapping; }
@@ -581,6 +623,7 @@ function limited(value: string, length: number): string { const output = value.t
 function mimeFor(name: string): string | undefined { const extension = extname(name).toLowerCase(); return extension === '.txt' ? 'text/plain' : extension === '.md' ? 'text/markdown' : extension === '.json' ? 'application/json' : undefined; }
 function delay(milliseconds: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, milliseconds)); }
 function nonEmpty(value: string | undefined): string | undefined { return value && value.length ? value : undefined; }
+function expandHome(path: string): string { return path.replace(/^~(?=$|[\\/])/, homedir()); }
 function comparableSyncPath(path: string): string { return path.normalize('NFD').toLocaleLowerCase('en-US'); }
 function isCaseInsensitivePlatform(platform: NodeJS.Platform = process.platform): boolean { return platform === 'win32' || platform === 'darwin'; }
 function sameLocalPath(left: string, right: string, platform: NodeJS.Platform = process.platform): boolean { const pathResolve = platform === 'win32' ? windowsPath.resolve : resolve; const normalizedLeft = pathResolve(left); const normalizedRight = pathResolve(right); return isCaseInsensitivePlatform(platform) ? comparableSyncPath(normalizedLeft) === comparableSyncPath(normalizedRight) : normalizedLeft === normalizedRight; }

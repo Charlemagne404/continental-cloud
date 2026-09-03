@@ -192,3 +192,14 @@ test('project mapping uploads source files while leaving dependencies and build 
   const devices = await request<Array<{ mappings: Array<{ status: string; progress: { phase: string; filesDone: number; filesTotal: number } | null }> }>>(run, '/sync/devices');
   assert.equal(devices[0].mappings[0].status, 'idle'); assert.equal(devices[0].mappings[0].progress?.phase, 'complete'); assert.equal(devices[0].mappings[0].progress?.filesDone, devices[0].mappings[0].progress?.filesTotal);
 });
+
+test('web-managed folder mappings are adopted by the desktop client', async () => {
+  const run = await boot(); await json(run, '/files/folder', { parentPath: '', name: 'Projects' }); const config = freshConfig(run.base, run.token, 'Web managed'); const configFile = join(run.root, 'web-managed.json'); await saveSyncConfig(config, configFile); const daemon = new SyncDaemon(config, configFile);
+  await daemon.syncNow();
+  const mappingId = '11111111-1111-4111-8111-111111111111'; const localPath = join(run.root, 'web-folder'); const endpoint = `/sync/devices/${config.deviceId}/mappings`;
+  const remote = await json<{ id: string }>(run, endpoint, { id: mappingId, cloudPath: 'Projects', localPath }); await daemon.syncNow();
+  assert.equal(config.mappings.length, 1); assert.equal(config.mappings[0].id, remote.id); assert.equal(config.mappings[0].localPath, localPath);
+  await request(run, `${endpoint}/${remote.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paused: true }) }); await daemon.syncNow(); assert.equal(daemon.status()[0].status, 'paused');
+  const nextPath = join(run.root, 'web-folder-new'); await mkdir(nextPath); await writeFile(join(nextPath, 'chosen-here.txt'), 'picked from the web console'); await json(run, endpoint, { id: remote.id, cloudPath: 'Projects', localPath: nextPath, paused: false }); await daemon.syncNow();
+  assert.equal(config.mappings[0].localPath, nextPath); const cloud = await request<{ items: Array<{ name: string }> }>(run, '/files?path=Projects'); assert(cloud.items.some((item) => item.name === 'chosen-here.txt'));
+});

@@ -1,0 +1,14 @@
+[Unit]
+Description=Continental Cloud Headscale tailnet proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sh -c 'until /usr/sbin/ip -4 addr show dev tailscale0 | /usr/bin/grep -q "100.64.0.2/32"; do sleep 2; done'
+ExecStart=/usr/bin/caddy run --config /home/charlie/continental-cloud/deploy/continental-cloud-tailnet.Caddyfile
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

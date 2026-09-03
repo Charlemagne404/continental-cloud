@@ -1,0 +1,2301 @@
+
+
+===== Report metadata =====
+
+$ date --iso-8601=seconds
+2026-08-31T21:16:59+02:00
+
+$ hostname
+charlie-Legion-T530-28ICB
+
+$ id
+uid=0(root) gid=0(root) groups=0(root)
+Original invoking user: charlie
+Report path: /home/charlie/continental-cloud/host-report.txt
+Read-only collection: yes
+
+
+===== Operating system and runtime =====
+
+$ uname -a
+Linux charlie-Legion-T530-28ICB 7.0.0-30-generic #30~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Fri Aug  7 13:27:52 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
+
+$ OS release
+PRETTY_NAME="Ubuntu 24.04.4 LTS"
+NAME="Ubuntu"
+VERSION_ID="24.04"
+VERSION="24.04.4 LTS (Noble Numbat)"
+VERSION_CODENAME=noble
+ID=ubuntu
+ID_LIKE=debian
+HOME_URL="https://www.ubuntu.com/"
+SUPPORT_URL="https://help.ubuntu.com/"
+BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
+PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
+UBUNTU_CODENAME=noble
+LOGO=ubuntu-logo
+
+$ hostnamectl --static
+charlie-Legion-T530-28ICB
+
+$ timedatectl status
+               Local time: Mon 2026-08-31 21:16:59 CEST
+           Universal time: Mon 2026-08-31 19:16:59 UTC
+                 RTC time: Mon 2026-08-31 19:16:59
+                Time zone: Europe/Stockholm (CEST, +0200)
+System clock synchronized: yes
+              NTP service: active
+          RTC in local TZ: no
+
+$ systemd-detect-virt
+none
+[exit status 1]
+
+$ nproc
+6
+
+$ lscpu
+Architecture:                            x86_64
+CPU op-mode(s):                          32-bit, 64-bit
+Address sizes:                           39 bits physical, 48 bits virtual
+Byte Order:                              Little Endian
+CPU(s):                                  6
+On-line CPU(s) list:                     0-5
+Vendor ID:                               GenuineIntel
+BIOS Vendor ID:                          Intel(R) Corporation
+Model name:                              Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz
+BIOS Model name:                         Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz To Be Filled By O.E.M. CPU @ 2.8GHz
+BIOS CPU family:                         205
+CPU family:                              6
+Model:                                   158
+Thread(s) per core:                      1
+Core(s) per socket:                      6
+Socket(s):                               1
+Stepping:                                10
+CPU(s) scaling MHz:                      95%
+CPU max MHz:                             4100.0000
+CPU min MHz:                             800.0000
+BogoMIPS:                                5799.77
+Flags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf pni pclmulqdq dtes64 monitor ds_cpl vmx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb pti ssbd ibrs ibpb stibp tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid mpx rdseed adx smap clflushopt intel_pt xsaveopt xsavec xgetbv1 xsaves dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp vnmi md_clear flush_l1d arch_capabilities
+Virtualization:                          VT-x
+L1d cache:                               192 KiB (6 instances)
+L1i cache:                               192 KiB (6 instances)
+L2 cache:                                1.5 MiB (6 instances)
+L3 cache:                                9 MiB (1 instance)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-5
+Vulnerability Gather data sampling:      Vulnerable
+Vulnerability Ghostwrite:                Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             KVM: Mitigation: Split huge pages
+Vulnerability L1tf:                      Mitigation; PTE Inversion; VMX conditional cache flushes, SMT disabled
+Vulnerability Mds:                       Mitigation; Clear CPU buffers; SMT disabled
+Vulnerability Meltdown:                  Mitigation; PTI
+Vulnerability Mmio stale data:           Mitigation; Clear CPU buffers; SMT disabled
+Vulnerability Old microcode:             Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Mitigation; IBRS
+Vulnerability Spec rstack overflow:      Not affected
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; IBRS; IBPB conditional; STIBP disabled; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected
+Vulnerability Srbds:                     Mitigation; Microcode
+Vulnerability Tsa:                       Not affected
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Mitigation; IBPB before exit to userspace
+
+$ free -h
+               total        used        free      shared  buff/cache   available
+Mem:            15Gi       8.7Gi       365Mi       226Mi       7.0Gi       6.9Gi
+Swap:          4.0Gi       213Mi       3.8Gi
+
+$ uptime
+ 21:16:59 up 3 days,  5:43,  1 user,  load average: 0.46, 0.87, 0.91
+
+$ node --version
+v22.23.2
+
+$ npm --version
+10.9.8
+
+$ Node installations
+node is /usr/bin/node
+node is /bin/node
+
+
+===== Block devices and filesystem capacity =====
+
+$ lsblk -e7 -o NAME\,MODEL\,SERIAL\,SIZE\,FSTYPE\,LABEL\,UUID\,TYPE\,MOUNTPOINTS\,RO\,STATE
+NAME        MODEL                      SERIAL           SIZE FSTYPE LABEL      UUID                                 TYPE MOUNTPOINTS RO STATE
+sda         ST2000DM008-2UB102         WK30HM3C         1.8T                                                        disk              0 running
+├─sda1                                                   16M                                                        part              0 
+├─sda2                                                  1.2T ntfs   2 T        EC78340F7833D6D4                     part              0 
+├─sda3                                                    1G vfat              2F6A-CAB3                            part              0 
+└─sda4                                                614.2G ext4              efd84420-c650-45ea-8fec-5ad472c2dc0d part              0 
+sdb         ST3000DM001                W1F4SJ5P         3.9G                                                        disk              0 running
+nvme0n1     SAMSUNG MZVLB512HBJQ-000L7 S4ENNF0N600043 476.9G                                                        disk              0 live
+├─nvme0n1p1                                               1G vfat   EFI        6853-75B4                            part /boot/efi    0 
+└─nvme0n1p2                                           475.9G ext4   ubuntu-ssd 49216ad5-19ec-4d66-95e6-fe4ad5e12455 part /            0 
+
+$ blkid
+/dev/nvme0n1p2: LABEL="ubuntu-ssd" UUID="49216ad5-19ec-4d66-95e6-fe4ad5e12455" BLOCK_SIZE="4096" TYPE="ext4" PARTLABEL="ubuntu" PARTUUID="33fd8d41-c348-47ee-9faa-3c28de8be5c1"
+/dev/loop29: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop19: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/nvme0n1p1: LABEL_FATBOOT="EFI" LABEL="EFI" UUID="6853-75B4" BLOCK_SIZE="512" TYPE="vfat" PARTLABEL="ESP" PARTUUID="63f9638a-b2fb-4462-b9be-430d33822ba6"
+/dev/loop27: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop17: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop8: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop25: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop15: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop6: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop23: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop13: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop4: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop31: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop21: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop11: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop2: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop0: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop28: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop18: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop9: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop26: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop16: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop7: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop24: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/sda4: UUID="efd84420-c650-45ea-8fec-5ad472c2dc0d" BLOCK_SIZE="4096" TYPE="ext4" PARTUUID="930c3a18-b024-488f-acf9-13d89fc5335d"
+/dev/sda2: LABEL="2 T" BLOCK_SIZE="512" UUID="EC78340F7833D6D4" TYPE="ntfs" PARTLABEL="Basic data partition" PARTUUID="cef8319f-cd88-40cc-b62d-405d4cc6bfb2"
+/dev/sda3: UUID="2F6A-CAB3" BLOCK_SIZE="512" TYPE="vfat" PARTUUID="29a7e5f1-e5bf-42b5-9249-fa999b1e334e"
+/dev/sda1: PARTLABEL="Microsoft reserved partition" PARTUUID="fdf3cf70-ea79-41a3-9e10-4052817bdb5a"
+/dev/loop14: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop5: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop32: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop22: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop12: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop3: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop30: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop20: BLOCK_SIZE="131072" TYPE="squashfs"
+/dev/loop10: BLOCK_SIZE="131072" TYPE="squashfs"
+
+$ findmnt -rn -o TARGET\,SOURCE\,FSTYPE\,OPTIONS
+/sys sysfs sysfs rw,nosuid,nodev,noexec,relatime
+/proc proc proc rw,nosuid,nodev,noexec,relatime
+/dev udev devtmpfs rw,nosuid,relatime,size=6749208k,nr_inodes=1687302,mode=755,inode64
+/dev/pts devpts devpts rw,nosuid,noexec,relatime,gid=5,mode=620,ptmxmode=000
+/run tmpfs tmpfs rw,nosuid,nodev,noexec,relatime,size=1627504k,mode=755,inode64
+/ /dev/nvme0n1p2 ext4 rw,relatime
+/sys/kernel/security securityfs securityfs rw,nosuid,nodev,noexec,relatime
+/dev/shm tmpfs tmpfs rw,nosuid,nodev,inode64
+/run/lock tmpfs tmpfs rw,nosuid,nodev,noexec,relatime,size=5120k,inode64
+/sys/fs/cgroup cgroup2 cgroup2 rw,nosuid,nodev,noexec,relatime,nsdelegate,memory_recursiveprot
+/sys/fs/pstore none pstore rw,nosuid,nodev,noexec,relatime
+/sys/firmware/efi/efivars efivarfs efivarfs rw,nosuid,nodev,noexec,relatime
+/sys/fs/bpf bpf bpf rw,nosuid,nodev,noexec,relatime,mode=700
+/proc/sys/fs/binfmt_misc systemd-1 autofs rw,relatime,fd=32,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=5463
+/dev/mqueue mqueue mqueue rw,nosuid,nodev,noexec,relatime
+/dev/hugepages hugetlbfs hugetlbfs rw,nosuid,nodev,relatime,pagesize=2M
+/sys/kernel/debug debugfs debugfs rw,nosuid,nodev,noexec,relatime
+/sys/kernel/tracing tracefs tracefs rw,nosuid,nodev,noexec,relatime
+/sys/fs/fuse/connections fusectl fusectl rw,nosuid,nodev,noexec,relatime
+/sys/kernel/config configfs configfs rw,nosuid,nodev,noexec,relatime
+/snap/bare/5 /dev/loop0 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/chromium/3507 /dev/loop2 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/core22/2437 /dev/loop4 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/core22/2411 /dev/loop3 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/core24/1587 /dev/loop5 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/core24/1643 /dev/loop6 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/cups/1229 /dev/loop9 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/curl/2411 /dev/loop7 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/cups/1238 /dev/loop10 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/docker/3579 /dev/loop8 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/curl/2414 /dev/loop13 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/docker/3505 /dev/loop14 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/firefox/8702 /dev/loop12 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/firmware-updater/224 /dev/loop15 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/firefox/8803 /dev/loop11 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/firmware-updater/226 /dev/loop16 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/gnome-42-2204/247 /dev/loop17 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/gnome-42-2204/263 /dev/loop18 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/gnome-46-2404/153 /dev/loop19 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/mesa-2404/1165 /dev/loop22 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/gtk-common-themes/1535 /dev/loop21 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/gnome-46-2404/164 /dev/loop20 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/mesa-2404/1839 /dev/loop23 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/snap-store/1367 /dev/loop24 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/snap-store/1390 /dev/loop25 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/snapd/27591 /dev/loop26 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/snapd-desktop-integration/391 /dev/loop28 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/thunderbird/1228 /dev/loop29 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/snapd-desktop-integration/387 /dev/loop31 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/snapd/27710 /dev/loop27 squashfs ro,nodev,relatime,errors=continue,threads=single
+/snap/thunderbird/1201 /dev/loop30 squashfs ro,nodev,relatime,errors=continue,threads=single
+/boot/efi /dev/nvme0n1p1 vfat rw,relatime,fmask=0022,dmask=0022,codepage=437,iocharset=iso8859-1,shortname=mixed,errors=remount-ro
+/proc/sys/fs/binfmt_misc binfmt_misc binfmt_misc rw,nosuid,nodev,noexec,relatime
+/run/user/1000 tmpfs tmpfs rw,nosuid,nodev,relatime,size=1627500k,nr_inodes=406875,mode=700,uid=1000,gid=1000,inode64
+/run/snapd/ns tmpfs[/snapd/ns] tmpfs rw,nosuid,nodev,noexec,relatime,size=1627504k,mode=755,inode64
+/run/user/1000/doc portal fuse.portal rw,nosuid,nodev,relatime,user_id=1000,group_id=1000
+/run/snapd/ns/cups.mnt nsfs[mnt:[4026532533]] nsfs rw
+/run/snapd/ns/docker.mnt nsfs[mnt:[4026532534]] nsfs rw
+/run/snapd/ns/snapd-desktop-integration.mnt nsfs[mnt:[4026532735]] nsfs rw
+/run/user/1000/gvfs gvfsd-fuse fuse.gvfsd-fuse rw,nosuid,nodev,relatime,user_id=1000,group_id=1000
+/run/snapd/ns/firmware-updater.mnt nsfs[mnt:[4026532646]] nsfs rw
+/snap/chromium/3520 /dev/loop32 squashfs ro,nodev,relatime,errors=continue,threads=single
+/run/snapd/ns/chromium.mnt nsfs[mnt:[4026532648]] nsfs rw
+/tmp/RustDesk/cliprdr-server rustdesk-cliprdr-fs fuse ro,nosuid,nodev,noatime,user_id=1000,group_id=1000
+
+$ df -hT
+Filesystem     Type      Size  Used Avail Use% Mounted on
+tmpfs          tmpfs     1.6G  3.4M  1.6G   1% /run
+/dev/nvme0n1p2 ext4      468G  185G  260G  42% /
+tmpfs          tmpfs     7.8G     0  7.8G   0% /dev/shm
+tmpfs          tmpfs     5.0M   12K  5.0M   1% /run/lock
+efivarfs       efivarfs  192K   71K  117K  38% /sys/firmware/efi/efivars
+/dev/nvme0n1p1 vfat     1022M   11M 1012M   2% /boot/efi
+tmpfs          tmpfs     1.6G  180K  1.6G   1% /run/user/1000
+
+$ df -ih
+Filesystem     Inodes IUsed IFree IUse% Mounted on
+tmpfs            2.0M  1.8K  2.0M    1% /run
+/dev/nvme0n1p2    30M  919K   29M    4% /
+tmpfs            2.0M     1  2.0M    1% /dev/shm
+tmpfs            2.0M     5  2.0M    1% /run/lock
+efivarfs            0     0     0     - /sys/firmware/efi/efivars
+/dev/nvme0n1p1      0     0     0     - /boot/efi
+tmpfs            398K   198  398K    1% /run/user/1000
+
+$ udisksctl status
+MODEL                     REVISION  SERIAL               DEVICE
+--------------------------------------------------------------------------
+SAMSUNG MZVLB512HBJQ-000L7 5M2QEXF7  S4ENNF0N600043       nvme0n1 
+ST2000DM008-2UB102        0001      WK30HM3C             sda     
+ST3000DM001               AP54      W1F4SJ5P             sdb     
+
+$ Mount directories and Continental markers
+drwxr-xr-x  4 root root 4096 May 16 18:47 /media
+drwxr-x---+ 2 root root 4096 Aug 27 18:45 /media/charlie
+drwxr-x---+ 2 root root 4096 Aug 28 15:40 /media/root
+drwxr-xr-x  3 root root 4096 May 16 18:21 /mnt
+drwxr-xr-x  2 root root 4096 May 16 18:21 /mnt/hdd-ubuntu
+
+$ Filesystem metadata without mounting
+
+--- /dev/sda2 (ntfs) ---
+Volume Information 
+	Name of device: /dev/sda2
+	Device state: 11
+	Volume Name: 2 T
+	Volume State: 91
+	Volume Flags: 0x0000
+	Volume Version: 3.1
+	Sector Size: 512
+	Cluster Size: 4096
+	Index Block Size: 4096
+	Volume Size in Clusters: 327088127
+MFT Information 
+	MFT Record Size: 1024
+	MFT Zone Multiplier: 0
+	MFT Data Position: 24
+	MFT Zone Start: 786432
+	MFT Zone End: 41672447
+	MFT Zone Position: 786432
+	Current Position in First Data Zone: 41672447
+	Current Position in Second Data Zone: 0
+	Allocated clusters 406720 (0.1%)
+	LCN of Data Attribute for FILE_MFT: 786432
+	FILE_MFTMirr Size: 4
+	LCN of Data Attribute for File_MFTMirr: 2
+	Size of Attribute Definition Table: 2560
+	Number of Attached Extent Inodes: 0
+FILE_Bitmap Information 
+	FILE_Bitmap MFT Record Number: 6
+	State of FILE_Bitmap Inode: 80
+	Length of Attribute List: 0
+	Number of Attached Extent Inodes: 0
+FILE_Bitmap Data Attribute Information
+	Decompressed Runlist: not done yet
+	Base Inode: 6
+	Attribute Types: not done yet
+	Attribute Name Length: 0
+	Attribute State: 3
+	Attribute Allocated Size: 40886272
+	Attribute Data Size: 40886016
+	Attribute Initialized Size: 40886016
+	Attribute Compressed Size: 0
+	Compression Block Size: 0
+	Compression Block Size Bits: 0
+	Compression Block Clusters: 0
+	Free Clusters: 66667181 (20.4%)
+
+--- /dev/sda4 (ext4) ---
+dumpe2fs 1.47.0 (5-Feb-2023)
+Filesystem volume name:   <none>
+Last mounted on:          /
+Filesystem UUID:          efd84420-c650-45ea-8fec-5ad472c2dc0d
+Filesystem magic number:  0xEF53
+Filesystem revision #:    1 (dynamic)
+Filesystem features:      has_journal ext_attr resize_inode dir_index filetype extent 64bit flex_bg sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+Filesystem flags:         signed_directory_hash 
+Default mount options:    user_xattr acl
+Filesystem state:         clean
+Errors behavior:          Continue
+Filesystem OS type:       Linux
+Inode count:              40255488
+Block count:              161010944
+Reserved block count:     8050547
+Overhead clusters:        2807776
+Free blocks:              133634423
+Free inodes:              39627231
+First block:              0
+Block size:               4096
+Fragment size:            4096
+Group descriptor size:    64
+Reserved GDT blocks:      1024
+Blocks per group:         32768
+Fragments per group:      32768
+Inodes per group:         8192
+Inode blocks per group:   512
+Flex block group size:    16
+Filesystem created:       Fri Feb 28 15:06:48 2025
+Last mount time:          Tue May  5 21:43:23 2026
+Last write time:          Sat May 16 17:47:47 2026
+Mount count:              120
+Maximum mount count:      -1
+Last checked:             Fri Feb 28 15:06:48 2025
+Check interval:           0 (<none>)
+Lifetime writes:          2266 GB
+Reserved blocks uid:      0 (user root)
+Reserved blocks gid:      0 (group root)
+First inode:              11
+Inode size:	          256
+Required extra isize:     32
+Desired extra isize:      32
+Journal inode:            8
+Default directory hash:   half_md4
+Directory Hash Seed:      32181c74-baa6-4b11-9fa4-5fc2fb57734b
+Journal backup:           inode blocks
+Checksum type:            crc32c
+Checksum:                 0x96dab001
+Journal features:         journal_incompat_revoke journal_64bit journal_checksum_v3
+Total journal size:       1024M
+Total journal blocks:     262144
+Max transaction length:   262144
+Fast commit length:       0
+Journal sequence:         0x00814c4e
+Journal start:            0
+Journal checksum type:    crc32c
+Journal checksum:         0xde63feee
+
+
+--- /dev/nvme0n1p2 (ext4) ---
+dumpe2fs 1.47.0 (5-Feb-2023)
+Filesystem volume name:   ubuntu-ssd
+Last mounted on:          /
+Filesystem UUID:          49216ad5-19ec-4d66-95e6-fe4ad5e12455
+Filesystem magic number:  0xEF53
+Filesystem revision #:    1 (dynamic)
+Filesystem features:      has_journal ext_attr resize_inode dir_index filetype needs_recovery extent 64bit flex_bg sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+Filesystem flags:         signed_directory_hash 
+Default mount options:    user_xattr acl
+Filesystem state:         clean
+Errors behavior:          Continue
+Filesystem OS type:       Linux
+Inode count:              31195136
+Block count:              124764416
+Reserved block count:     6238220
+Overhead clusters:        2238986
+Free blocks:              74198961
+Free inodes:              30254820
+First block:              0
+Block size:               4096
+Fragment size:            4096
+Group descriptor size:    64
+Reserved GDT blocks:      1024
+Blocks per group:         32768
+Fragments per group:      32768
+Inodes per group:         8192
+Inode blocks per group:   512
+Flex block group size:    16
+Filesystem created:       Mon May  4 22:50:13 2026
+Last mount time:          Fri Aug 28 15:34:07 2026
+Last write time:          Mon Aug 31 20:35:40 2026
+Mount count:              10
+Maximum mount count:      -1
+Last checked:             Mon May  4 22:50:13 2026
+Check interval:           0 (<none>)
+Lifetime writes:          4545 GB
+Reserved blocks uid:      0 (user root)
+Reserved blocks gid:      0 (group root)
+First inode:              11
+Inode size:	          256
+Required extra isize:     32
+Desired extra isize:      32
+Journal inode:            8
+First orphan inode:       6301402
+Default directory hash:   half_md4
+Directory Hash Seed:      0dcb907a-6e0a-4470-be59-06c102fe80e2
+Journal backup:           inode blocks
+Checksum type:            crc32c
+Checksum:                 0xfc5eb3eb
+Journal features:         journal_incompat_revoke journal_64bit journal_checksum_v3
+Total journal size:       1024M
+Total journal blocks:     262144
+Max transaction length:   262144
+Fast commit length:       0
+Journal sequence:         0x004435b5
+Journal start:            223040
+Journal checksum type:    crc32c
+Journal checksum:         0xf6b2f6d4
+
+
+$ Partition tables
+
+--- /dev/sda ---
+Disk /dev/sda: 1.82 TiB, 2000398934016 bytes, 3907029168 sectors
+Disk model: ST2000DM008-2UB1
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 4096 bytes
+I/O size (minimum/optimal): 4096 bytes / 4096 bytes
+Disklabel type: gpt
+Disk identifier: 18341BD1-ED7F-4CE0-8ACD-0EB7882FC58C
+
+Device          Start        End    Sectors   Size Type
+/dev/sda1          34      32767      32734    16M Microsoft reserved
+/dev/sda2       32768 2616737791 2616705024   1.2T Microsoft basic data
+/dev/sda3  2616737792 2618939391    2201600     1G EFI System
+/dev/sda4  2618939392 3907026943 1288087552 614.2G Linux filesystem
+
+Partition 1 does not start on physical sector boundary.
+
+--- /dev/sdb ---
+fdisk: cannot open /dev/sdb: Input/output error
+
+--- /dev/nvme0n1 ---
+Disk /dev/nvme0n1: 476.94 GiB, 512110190592 bytes, 1000215216 sectors
+Disk model: SAMSUNG MZVLB512HBJQ-000L7              
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 512 bytes
+I/O size (minimum/optimal): 512 bytes / 512 bytes
+Disklabel type: gpt
+Disk identifier: 9BC1A8E8-9A03-40C0-B323-1E0250A9F5E5
+
+Device           Start        End   Sectors   Size Type
+/dev/nvme0n1p1    2048    2099199   2097152     1G EFI System
+/dev/nvme0n1p2 2099200 1000214527 998115328 475.9G Linux filesystem
+
+
+===== Disk health indicators =====
+
+--- SMART /dev/sda ---
+smartctl 7.4 2023-08-01 r5530 [x86_64-linux-7.0.0-30-generic] (local build)
+Copyright (C) 2002-23, Bruce Allen, Christian Franke, www.smartmontools.org
+
+=== START OF INFORMATION SECTION ===
+Model Family:     Seagate BarraCuda 3.5 (SMR)
+Device Model:     ST2000DM008-2UB102
+Serial Number:    WK30HM3C
+LU WWN Device Id: 5 000c50 0f1687be1
+Firmware Version: 0001
+User Capacity:    2,000,398,934,016 bytes [2.00 TB]
+Sector Sizes:     512 bytes logical, 4096 bytes physical
+Rotation Rate:    7200 rpm
+Form Factor:      3.5 inches
+TRIM Command:     Available
+Device is:        In smartctl database 7.3/5528
+ATA Version is:   ACS-3 T13/2161-D revision 5
+SATA Version is:  SATA 3.1, 6.0 Gb/s (current: 6.0 Gb/s)
+Local Time is:    Mon Aug 31 21:17:02 2026 CEST
+SMART support is: Available - device has SMART capability.
+SMART support is: Enabled
+
+=== START OF READ SMART DATA SECTION ===
+SMART overall-health self-assessment test result: PASSED
+
+
+--- SMART /dev/sdb ---
+smartctl 7.4 2023-08-01 r5530 [x86_64-linux-7.0.0-30-generic] (local build)
+Copyright (C) 2002-23, Bruce Allen, Christian Franke, www.smartmontools.org
+
+=== START OF INFORMATION SECTION ===
+Device Model:     ST3000DM001
+Serial Number:    W1F4SJ5P
+LU WWN Device Id: 5 000c50 0730709b5
+Firmware Version: AP54
+User Capacity:    137,438,952,960 bytes [137 GB]
+Sector Size:      512 bytes logical/physical
+Rotation Rate:    7200 rpm
+Device is:        Not in smartctl database 7.3/5528
+ATA Version is:   ATA8-ACS T13/1699-D revision 4
+SATA Version is:  SATA 3.0, 6.0 Gb/s
+Local Time is:    Mon Aug 31 21:17:02 2026 CEST
+SMART support is: Available - device has SMART capability.
+SMART support is: Enabled
+
+Read SMART Data failed: scsi error aborted command
+
+=== START OF READ SMART DATA SECTION ===
+SMART Status command failed: scsi error aborted command
+SMART overall-health self-assessment test result: UNKNOWN!
+SMART Status, Attributes and Thresholds cannot be read.
+
+
+--- SMART /dev/nvme0n1 ---
+smartctl 7.4 2023-08-01 r5530 [x86_64-linux-7.0.0-30-generic] (local build)
+Copyright (C) 2002-23, Bruce Allen, Christian Franke, www.smartmontools.org
+
+=== START OF INFORMATION SECTION ===
+Model Number:                       SAMSUNG MZVLB512HBJQ-000L7
+Serial Number:                      S4ENNF0N600043
+Firmware Version:                   5M2QEXF7
+PCI Vendor/Subsystem ID:            0x144d
+IEEE OUI Identifier:                0x002538
+Total NVM Capacity:                 512,110,190,592 [512 GB]
+Unallocated NVM Capacity:           0
+Controller ID:                      4
+NVMe Version:                       1.3
+Number of Namespaces:               1
+Namespace 1 Size/Capacity:          512,110,190,592 [512 GB]
+Namespace 1 Utilization:            209,637,982,208 [209 GB]
+Namespace 1 Formatted LBA Size:     512
+Namespace 1 IEEE EUI-64:            002538 8601b250ea
+Local Time is:                      Mon Aug 31 21:17:02 2026 CEST
+
+=== START OF SMART DATA SECTION ===
+SMART overall-health self-assessment test result: PASSED
+
+
+$ sensors
+coretemp-isa-0000
+Adapter: ISA adapter
+Package id 0:  +53.0°C  (high = +82.0°C, crit = +100.0°C)
+Core 0:        +53.0°C  (high = +82.0°C, crit = +100.0°C)
+Core 1:        +53.0°C  (high = +82.0°C, crit = +100.0°C)
+Core 2:        +53.0°C  (high = +82.0°C, crit = +100.0°C)
+Core 3:        +53.0°C  (high = +82.0°C, crit = +100.0°C)
+Core 4:        +53.0°C  (high = +82.0°C, crit = +100.0°C)
+Core 5:        +52.0°C  (high = +82.0°C, crit = +100.0°C)
+
+pch_cannonlake-virtual-0
+Adapter: Virtual device
+temp1:        +55.0°C  
+
+acpitz-acpi-0
+Adapter: ACPI interface
+temp1:        +27.8°C  
+
+iwlwifi_2-virtual-0
+Adapter: Virtual device
+temp1:        +42.0°C  
+
+nvme-pci-0200
+Adapter: PCI adapter
+Composite:    +45.9°C  (low  = -273.1°C, high = +83.8°C)
+                       (crit = +84.8°C)
+Sensor 1:     +45.9°C  (low  = -273.1°C, high = +65261.8°C)
+Sensor 2:     +44.9°C  (low  = -273.1°C, high = +65261.8°C)
+
+
+
+===== Storage paths and permissions =====
+
+$ stat -c %n\ %F\ %a\ %U:%G\ %s\ bytes /mnt /mnt/hdd-ubuntu /home/charlie/continental-cloud
+/mnt directory 755 root:root 4096 bytes
+/mnt/hdd-ubuntu directory 755 root:root 4096 bytes
+/home/charlie/continental-cloud directory 775 charlie:charlie 4096 bytes
+
+$ Relevant path permissions
+/mnt/continental-cloud: absent
+/mnt/hdd-ubuntu directory 755 root:root 4096 bytes
+/home/charlie/continental-cloud/storage: absent
+/home/charlie/continental-cloud/.env: absent
+/home/charlie/continental-cloud/.env.example regular file 664 charlie:charlie 1132 bytes
+
+$ Repository and nearby disk usage
+19M	/var/www
+61M	/home/charlie/continental-cloud
+87G	/home/charlie
+
+$ Possible encrypted block devices
+control
+
+
+===== Network addresses, listeners, and firewall =====
+
+$ ip -br addr
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+enp4s0           UP             151.177.43.100/18 fe80::9aee:cbff:fecc:8b08/64 
+wlp3s0           DOWN           
+tailscale0       UNKNOWN        100.96.36.100/32 fd7a:115c:a1e0::ed33:2465/128 fe80::1c94:595d:c893:a827/64 
+br-639f1ea82f21  UP             172.18.0.1/16 fe80::54eb:ffff:fe46:6718/64 
+docker0          DOWN           172.17.0.1/16 
+vethf2e20b2@if2  UP             fe80::78bd:46ff:feab:3d96/64 
+
+$ ip route
+default via 151.177.0.1 dev enp4s0 proto dhcp src 151.177.43.100 metric 100 
+151.177.0.0/18 dev enp4s0 proto kernel scope link src 151.177.43.100 metric 100 
+172.17.0.0/16 dev docker0 proto kernel scope link src 172.17.0.1 linkdown 
+172.18.0.0/16 dev br-639f1ea82f21 proto kernel scope link src 172.18.0.1 
+
+$ ss -lntup
+Netid State  Recv-Q Send-Q               Local Address:Port  Peer Address:PortProcess                                                 
+udp   UNCONN 0      0                          0.0.0.0:53263      0.0.0.0:*    users:(("avahi-daemon",pid=1309,fd=14))                
+udp   UNCONN 0      0                          0.0.0.0:21119      0.0.0.0:*    users:(("rustdesk",pid=2732532,fd=17))                 
+udp   UNCONN 0      0                          0.0.0.0:5353       0.0.0.0:*    users:(("avahi-daemon",pid=1309,fd=12))                
+udp   UNCONN 0      0                          0.0.0.0:39782      0.0.0.0:*    users:(("rustdesk",pid=2732532,fd=18))                 
+udp   UNCONN 0      0                        127.0.0.1:8125       0.0.0.0:*    users:(("netdata",pid=3251,fd=442))                    
+udp   UNCONN 0      0                       127.0.0.54:53         0.0.0.0:*    users:(("systemd-resolve",pid=1286,fd=16))             
+udp   UNCONN 0      0                    127.0.0.53%lo:53         0.0.0.0:*    users:(("systemd-resolve",pid=1286,fd=14))             
+udp   UNCONN 0      0                          0.0.0.0:41641      0.0.0.0:*    users:(("tailscaled",pid=1659,fd=19))                  
+udp   UNCONN 0      0                             [::]:5353          [::]:*    users:(("avahi-daemon",pid=1309,fd=13))                
+udp   UNCONN 0      0                                *:443              *:*    users:(("caddy",pid=3289290,fd=9))                     
+udp   UNCONN 0      0                             [::]:41641         [::]:*    users:(("tailscaled",pid=1659,fd=18))                  
+udp   UNCONN 0      0                             [::]:43579         [::]:*    users:(("avahi-daemon",pid=1309,fd=15))                
+tcp   LISTEN 0      128                      127.0.0.1:4317       0.0.0.0:*    users:(("otel-plugin",pid=5157,fd=12))                 
+tcp   LISTEN 0      4096                 100.96.36.100:54997      0.0.0.0:*    users:(("tailscaled",pid=1659,fd=23))                  
+tcp   LISTEN 0      511                      127.0.0.1:5000       0.0.0.0:*    users:(("node",pid=4618,fd=22))                        
+tcp   LISTEN 0      4096                 127.0.0.53%lo:53         0.0.0.0:*    users:(("systemd-resolve",pid=1286,fd=15))             
+tcp   LISTEN 0      4096                     127.0.0.1:5432       0.0.0.0:*    users:(("docker-proxy",pid=168472,fd=8))               
+tcp   LISTEN 0      128                      127.0.0.1:8090       0.0.0.0:*    users:(("python",pid=8644,fd=9))                       
+tcp   LISTEN 0      4096                     127.0.0.1:8125       0.0.0.0:*    users:(("netdata",pid=3251,fd=493))                    
+tcp   LISTEN 0      511                      127.0.0.1:8789       0.0.0.0:*    users:(("node",pid=1651,fd=24))                        
+tcp   LISTEN 0      511                      127.0.0.1:8787       0.0.0.0:*    users:(("node",pid=3478,fd=21))                        
+tcp   LISTEN 0      4096                     127.0.0.1:631        0.0.0.0:*    users:(("cupsd",pid=594790,fd=7))                      
+tcp   LISTEN 0      4096                       0.0.0.0:22         0.0.0.0:*    users:(("sshd",pid=1694,fd=3),("systemd",pid=1,fd=494))
+tcp   LISTEN 0      4096                     127.0.0.1:2019       0.0.0.0:*    users:(("caddy",pid=3289290,fd=4))                     
+tcp   LISTEN 0      4096                     127.0.0.1:27017      0.0.0.0:*    users:(("mongod",pid=3247,fd=14))                      
+tcp   LISTEN 0      511                      127.0.0.1:3010       0.0.0.0:*    users:(("node",pid=3289217,fd=24))                     
+tcp   LISTEN 0      4096                       0.0.0.0:19999      0.0.0.0:*    users:(("netdata",pid=3251,fd=6))                      
+tcp   LISTEN 0      511                      127.0.0.1:3005       0.0.0.0:*    users:(("next-server (v1",pid=3353051,fd=21))          
+tcp   LISTEN 0      511                      127.0.0.1:3004       0.0.0.0:*    users:(("node",pid=1916,fd=21))                        
+tcp   LISTEN 0      511                      127.0.0.1:3003       0.0.0.0:*    users:(("node",pid=3258,fd=21))                        
+tcp   LISTEN 0      511                      127.0.0.1:3002       0.0.0.0:*    users:(("node",pid=3236,fd=21))                        
+tcp   LISTEN 0      4096                     127.0.0.1:11434      0.0.0.0:*    users:(("ollama",pid=3289184,fd=4))                    
+tcp   LISTEN 0      511                        0.0.0.0:3001       0.0.0.0:*    users:(("node",pid=1929,fd=21))                        
+tcp   LISTEN 0      4096                    127.0.0.54:53         0.0.0.0:*    users:(("systemd-resolve",pid=1286,fd=17))             
+tcp   LISTEN 0      5                        127.0.0.1:61209      0.0.0.0:*    users:(("glances",pid=1646,fd=4))                      
+tcp   LISTEN 0      4096                         [::1]:631           [::]:*    users:(("cupsd",pid=594790,fd=6))                      
+tcp   LISTEN 0      4096                             *:443              *:*    users:(("caddy",pid=3289290,fd=8))                     
+tcp   LISTEN 0      4096                          [::]:22            [::]:*    users:(("sshd",pid=1694,fd=4),("systemd",pid=1,fd=495))
+tcp   LISTEN 0      4096                             *:80               *:*    users:(("caddy",pid=3289290,fd=10))                    
+tcp   LISTEN 0      4096                             *:25565            *:*    users:(("java",pid=34559,fd=89))                       
+tcp   LISTEN 0      511                              *:8788             *:*    users:(("node",pid=1926,fd=21))                        
+tcp   LISTEN 0      4096   [fd7a:115c:a1e0::ed33:2465]:63146         [::]:*    users:(("tailscaled",pid=1659,fd=25))                  
+tcp   LISTEN 0      4096                          [::]:19999         [::]:*    users:(("netdata",pid=3251,fd=8))                      
+
+$ ufw status verbose
+Status: active
+Logging: on (low)
+Default: deny (incoming), allow (outgoing), deny (routed)
+New profiles: skip
+
+To                         Action      From
+--                         ------      ----
+443                        ALLOW IN    Anywhere                  
+80/tcp                     ALLOW IN    Anywhere                   # Caddy HTTP
+8080/tcp                   ALLOW IN    Anywhere                   # Jarvis API and WebSocket
+22/tcp on tailscale0       ALLOW IN    Anywhere                   # SSH through Tailscale
+25565/tcp                  ALLOW IN    Anywhere                  
+443 (v6)                   ALLOW IN    Anywhere (v6)             
+80/tcp (v6)                ALLOW IN    Anywhere (v6)              # Caddy HTTP
+8080/tcp (v6)              ALLOW IN    Anywhere (v6)              # Jarvis API and WebSocket
+22/tcp (v6) on tailscale0  ALLOW IN    Anywhere (v6)              # SSH through Tailscale
+25565/tcp (v6)             ALLOW IN    Anywhere (v6)             
+
+
+$ nftables ruleset, first 500 lines
+# Warning: table ip filter is managed by iptables-nft, do not touch!
+table ip filter {
+	chain ufw-before-logging-input {
+	}
+
+	chain ufw-before-logging-output {
+	}
+
+	chain ufw-before-logging-forward {
+	}
+
+	chain ufw-before-input {
+		iifname "lo" counter packets 5051047 bytes 15219576964 accept
+		ct state related,established counter packets 9829673 bytes 4380665916 accept
+		ct state invalid counter packets 597 bytes 42328 jump ufw-logging-deny
+		ct state invalid counter packets 597 bytes 42328 drop
+		ip protocol icmp icmp type destination-unreachable counter packets 0 bytes 0 accept
+		ip protocol icmp icmp type time-exceeded counter packets 0 bytes 0 accept
+		ip protocol icmp icmp type parameter-problem counter packets 0 bytes 0 accept
+		ip protocol icmp icmp type echo-request counter packets 1001 bytes 57019 accept
+		udp sport 67 udp dport 68 counter packets 1 bytes 328 accept
+		counter packets 265226 bytes 38403570 jump ufw-not-local
+		ip daddr 224.0.0.251 udp dport 5353 counter packets 293 bytes 24143 accept
+		ip daddr 239.255.255.250 udp dport 1900 counter packets 0 bytes 0 accept
+		counter packets 264933 bytes 38379427 jump ufw-user-input
+	}
+
+	chain ufw-before-output {
+		oifname "lo" counter packets 5049629 bytes 15219520616 accept
+		ct state related,established counter packets 9878587 bytes 5074402367 accept
+		counter packets 175019 bytes 11293328 jump ufw-user-output
+	}
+
+	chain ufw-before-forward {
+		ct state related,established counter packets 0 bytes 0 accept
+		ip protocol icmp icmp type destination-unreachable counter packets 0 bytes 0 accept
+		ip protocol icmp icmp type time-exceeded counter packets 0 bytes 0 accept
+		ip protocol icmp icmp type parameter-problem counter packets 0 bytes 0 accept
+		ip protocol icmp icmp type echo-request counter packets 0 bytes 0 accept
+		counter packets 0 bytes 0 jump ufw-user-forward
+	}
+
+	chain ufw-after-input {
+		udp dport 137 counter packets 33 bytes 2519 jump ufw-skip-to-policy-input
+		udp dport 138 counter packets 1 bytes 28 jump ufw-skip-to-policy-input
+		tcp dport 139 counter packets 38 bytes 1688 jump ufw-skip-to-policy-input
+		tcp dport 445 counter packets 189 bytes 8856 jump ufw-skip-to-policy-input
+		udp dport 67 counter packets 0 bytes 0 jump ufw-skip-to-policy-input
+		udp dport 68 counter packets 0 bytes 0 jump ufw-skip-to-policy-input
+		fib daddr type broadcast counter packets 0 bytes 0 jump ufw-skip-to-policy-input
+	}
+
+	chain ufw-after-output {
+	}
+
+	chain ufw-after-forward {
+	}
+
+	chain ufw-after-logging-input {
+		limit rate 3/minute burst 10 packets counter packets 13997 bytes 727513 log prefix "[UFW BLOCK] "
+	}
+
+	chain ufw-after-logging-output {
+	}
+
+	chain ufw-after-logging-forward {
+		limit rate 3/minute burst 10 packets counter packets 0 bytes 0 log prefix "[UFW BLOCK] "
+	}
+
+	chain ufw-reject-input {
+	}
+
+	chain ufw-reject-output {
+	}
+
+	chain ufw-reject-forward {
+	}
+
+	chain ufw-track-input {
+	}
+
+	chain ufw-track-output {
+		ip protocol tcp ct state new counter packets 98340 bytes 5900400 accept
+		ip protocol udp ct state new counter packets 76416 bytes 5379440 accept
+	}
+
+	chain ufw-track-forward {
+	}
+
+	chain INPUT {
+		type filter hook input priority filter; policy drop;
+		counter packets 16860009 bytes 21867361383 jump ts-input
+		counter packets 15147549 bytes 19638746325 jump ufw-before-logging-input
+		counter packets 15147549 bytes 19638746325 jump ufw-before-input
+		counter packets 129081 bytes 30393966 jump ufw-after-input
+		counter packets 128820 bytes 30380875 jump ufw-after-logging-input
+		counter packets 128820 bytes 30380875 jump ufw-reject-input
+		counter packets 128820 bytes 30380875 jump ufw-track-input
+	}
+
+	chain OUTPUT {
+		type filter hook output priority filter; policy accept;
+		counter packets 15103240 bytes 20305216551 jump ufw-before-logging-output
+		counter packets 15103240 bytes 20305216551 jump ufw-before-output
+		counter packets 175024 bytes 11293568 jump ufw-after-output
+		counter packets 175024 bytes 11293568 jump ufw-after-logging-output
+		counter packets 175024 bytes 11293568 jump ufw-reject-output
+		counter packets 175024 bytes 11293568 jump ufw-track-output
+	}
+
+	chain FORWARD {
+		type filter hook forward priority filter; policy drop;
+		counter packets 0 bytes 0 jump ts-forward
+		counter packets 0 bytes 0 jump DOCKER-USER
+		counter packets 0 bytes 0 jump DOCKER-FORWARD
+		counter packets 0 bytes 0 jump ufw-before-logging-forward
+		counter packets 0 bytes 0 jump ufw-before-forward
+		counter packets 0 bytes 0 jump ufw-after-forward
+		counter packets 0 bytes 0 jump ufw-after-logging-forward
+		counter packets 0 bytes 0 jump ufw-reject-forward
+		counter packets 0 bytes 0 jump ufw-track-forward
+	}
+
+	chain ufw-logging-deny {
+		ct state invalid limit rate 3/minute burst 10 packets counter packets 430 bytes 30972 return
+		limit rate 3/minute burst 10 packets counter packets 90 bytes 6120 log prefix "[UFW BLOCK] "
+	}
+
+	chain ufw-logging-allow {
+		limit rate 3/minute burst 10 packets counter packets 0 bytes 0 log prefix "[UFW ALLOW] "
+	}
+
+	chain ufw-skip-to-policy-input {
+		counter packets 261 bytes 13091 drop
+	}
+
+	chain ufw-skip-to-policy-output {
+		counter packets 0 bytes 0 accept
+	}
+
+	chain ufw-skip-to-policy-forward {
+		counter packets 0 bytes 0 drop
+	}
+
+	chain ufw-not-local {
+		fib daddr type local counter packets 255606 bytes 38079154 return
+		fib daddr type multicast counter packets 9620 bytes 324416 return
+		fib daddr type broadcast counter packets 0 bytes 0 return
+		limit rate 3/minute burst 10 packets counter packets 0 bytes 0 jump ufw-logging-deny
+		counter packets 0 bytes 0 drop
+	}
+
+	chain ufw-user-input {
+		tcp dport 443 counter packets 70737 bytes 4233931 accept
+		udp dport 443 counter packets 73 bytes 65224 accept
+		tcp dport 80 counter packets 19293 bytes 1145694 accept
+		tcp dport 8080 counter packets 43249 bytes 2402316 accept
+		iifname "tailscale0" tcp dport 22 counter packets 0 bytes 0 accept
+		tcp dport 25565 counter packets 2504 bytes 138496 accept
+	}
+
+	chain ufw-user-output {
+	}
+
+	chain ufw-user-forward {
+	}
+
+	chain ufw-user-logging-input {
+	}
+
+	chain ufw-user-logging-output {
+	}
+
+	chain ufw-user-logging-forward {
+	}
+
+	chain ufw-user-limit {
+		limit rate 3/minute burst 5 packets counter packets 0 bytes 0 log prefix "[UFW LIMIT BLOCK] "
+		counter packets 0 bytes 0 reject
+	}
+
+	chain ufw-user-limit-accept {
+		counter packets 0 bytes 0 accept
+	}
+
+	chain DOCKER {
+		ip daddr 172.18.0.2 iifname != "br-639f1ea82f21" oifname "br-639f1ea82f21" tcp dport 5432 counter packets 0 bytes 0 accept
+		iifname != "br-639f1ea82f21" oifname "br-639f1ea82f21" counter packets 0 bytes 0 drop
+		iifname != "docker0" oifname "docker0" counter packets 0 bytes 0 drop
+	}
+
+	chain DOCKER-FORWARD {
+		counter packets 0 bytes 0 jump DOCKER-CT
+		counter packets 0 bytes 0 jump DOCKER-INTERNAL
+		counter packets 0 bytes 0 jump DOCKER-BRIDGE
+		iifname "br-639f1ea82f21" counter packets 0 bytes 0 accept
+		iifname "docker0" counter packets 0 bytes 0 accept
+	}
+
+	chain DOCKER-BRIDGE {
+		oifname "br-639f1ea82f21" counter packets 0 bytes 0 jump DOCKER
+		oifname "docker0" counter packets 0 bytes 0 jump DOCKER
+	}
+
+	chain DOCKER-CT {
+		oifname "br-639f1ea82f21" ct state related,established counter packets 0 bytes 0 accept
+		oifname "docker0" ct state related,established counter packets 0 bytes 0 accept
+	}
+
+	chain DOCKER-INTERNAL {
+	}
+
+	chain DOCKER-USER {
+	}
+
+	chain ts-input {
+		ip saddr 100.96.36.100 iifname "lo" counter packets 0 bytes 0 accept
+		iifname "tailscale0" counter packets 1030877 bytes 1313841078 accept
+		udp dport 41641 counter packets 683887 bytes 916481687 accept
+		ip saddr 100.115.92.0/23 iifname != "tailscale0" counter packets 0 bytes 0 return
+		ip saddr 100.64.0.0/10 iifname != "tailscale0" counter packets 0 bytes 0 drop
+	}
+
+	chain ts-forward {
+		iifname "tailscale0" counter packets 0 bytes 0 meta mark set mark and 0xff00ffff xor 0x40000
+		meta mark & 0x00ff0000 == 0x00040000 counter packets 0 bytes 0 accept
+		ip saddr 100.64.0.0/10 oifname "tailscale0" counter packets 0 bytes 0 drop
+		oifname "tailscale0" counter packets 0 bytes 0 accept
+	}
+}
+# Warning: table ip6 filter is managed by iptables-nft, do not touch!
+table ip6 filter {
+	chain ufw6-before-logging-input {
+	}
+
+	chain ufw6-before-logging-output {
+	}
+
+	chain ufw6-before-logging-forward {
+	}
+
+	chain ufw6-before-input {
+		iifname "lo" counter packets 39 bytes 2736 accept
+		rt type 0 counter packets 0 bytes 0 drop
+		ct state related,established counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type echo-reply counter packets 0 bytes 0 accept
+		ct state invalid counter packets 0 bytes 0 jump ufw6-logging-deny
+		ct state invalid counter packets 0 bytes 0 drop
+		meta l4proto ipv6-icmp icmpv6 type destination-unreachable counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type packet-too-big counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type time-exceeded counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type parameter-problem counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type echo-request counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type nd-router-solicit ip6 hoplimit 255 counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type nd-router-advert ip6 hoplimit 255 counter packets 206 bytes 13184 accept
+		meta l4proto ipv6-icmp icmpv6 type nd-neighbor-solicit ip6 hoplimit 255 counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type nd-neighbor-advert ip6 hoplimit 255 counter packets 949 bytes 68328 accept
+		meta l4proto ipv6-icmp xt match "icmp6" ip6 hoplimit 255 counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" ip6 hoplimit 255 counter packets 0 bytes 0 accept
+		ip6 saddr fe80::/10 meta l4proto ipv6-icmp icmpv6 type mld-listener-query counter packets 0 bytes 0 accept
+		ip6 saddr fe80::/10 meta l4proto ipv6-icmp icmpv6 type mld-listener-report counter packets 0 bytes 0 accept
+		ip6 saddr fe80::/10 meta l4proto ipv6-icmp icmpv6 type mld-listener-done counter packets 0 bytes 0 accept
+		ip6 saddr fe80::/10 meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" ip6 hoplimit 255 counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" ip6 hoplimit 255 counter packets 0 bytes 0 accept
+		ip6 saddr fe80::/10 meta l4proto ipv6-icmp xt match "icmp6" ip6 hoplimit 1 counter packets 0 bytes 0 accept
+		ip6 saddr fe80::/10 meta l4proto ipv6-icmp xt match "icmp6" ip6 hoplimit 1 counter packets 0 bytes 0 accept
+		ip6 saddr fe80::/10 meta l4proto ipv6-icmp xt match "icmp6" ip6 hoplimit 1 counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" counter packets 0 bytes 0 accept
+		ip6 saddr fe80::/10 ip6 daddr fe80::/10 udp sport 547 udp dport 546 counter packets 0 bytes 0 accept
+		ip6 daddr ff02::fb udp dport 5353 counter packets 302 bytes 31224 accept
+		ip6 daddr ff02::f udp dport 1900 counter packets 0 bytes 0 accept
+		counter packets 4 bytes 2620 jump ufw6-user-input
+	}
+
+	chain ufw6-before-output {
+		oifname "lo" counter packets 39 bytes 2736 accept
+		rt type 0 counter packets 0 bytes 0 drop
+		ct state related,established counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type destination-unreachable counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type packet-too-big counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type time-exceeded counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type parameter-problem counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type echo-request counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type echo-reply counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type nd-router-solicit ip6 hoplimit 255 counter packets 180 bytes 9400 accept
+		meta l4proto ipv6-icmp icmpv6 type nd-neighbor-advert ip6 hoplimit 255 counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type nd-neighbor-solicit ip6 hoplimit 255 counter packets 953 bytes 68616 accept
+		meta l4proto ipv6-icmp icmpv6 type nd-router-advert ip6 hoplimit 255 counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" ip6 hoplimit 255 counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" ip6 hoplimit 255 counter packets 0 bytes 0 accept
+		ip6 saddr fe80::/10 meta l4proto ipv6-icmp icmpv6 type mld-listener-query counter packets 0 bytes 0 accept
+		ip6 saddr fe80::/10 meta l4proto ipv6-icmp icmpv6 type mld-listener-report counter packets 0 bytes 0 accept
+		ip6 saddr fe80::/10 meta l4proto ipv6-icmp icmpv6 type mld-listener-done counter packets 0 bytes 0 accept
+		ip6 saddr fe80::/10 meta l4proto ipv6-icmp xt match "icmp6" counter packets 31 bytes 2556 accept
+		meta l4proto ipv6-icmp xt match "icmp6" ip6 hoplimit 255 counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp xt match "icmp6" ip6 hoplimit 255 counter packets 0 bytes 0 accept
+		ip6 saddr fe80::/10 meta l4proto ipv6-icmp xt match "icmp6" ip6 hoplimit 1 counter packets 0 bytes 0 accept
+		ip6 saddr fe80::/10 meta l4proto ipv6-icmp xt match "icmp6" ip6 hoplimit 1 counter packets 0 bytes 0 accept
+		ip6 saddr fe80::/10 meta l4proto ipv6-icmp xt match "icmp6" ip6 hoplimit 1 counter packets 0 bytes 0 accept
+		counter packets 8844 bytes 718270 jump ufw6-user-output
+	}
+
+	chain ufw6-before-forward {
+		rt type 0 counter packets 0 bytes 0 drop
+		ct state related,established counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type destination-unreachable counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type packet-too-big counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type time-exceeded counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type parameter-problem counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type echo-request counter packets 0 bytes 0 accept
+		meta l4proto ipv6-icmp icmpv6 type echo-reply counter packets 0 bytes 0 accept
+		counter packets 0 bytes 0 jump ufw6-user-forward
+	}
+
+	chain ufw6-after-input {
+		udp dport 137 counter packets 0 bytes 0 jump ufw6-skip-to-policy-input
+		udp dport 138 counter packets 0 bytes 0 jump ufw6-skip-to-policy-input
+		tcp dport 139 counter packets 0 bytes 0 jump ufw6-skip-to-policy-input
+		tcp dport 445 counter packets 0 bytes 0 jump ufw6-skip-to-policy-input
+		udp dport 546 counter packets 0 bytes 0 jump ufw6-skip-to-policy-input
+		udp dport 547 counter packets 0 bytes 0 jump ufw6-skip-to-policy-input
+	}
+
+	chain ufw6-after-output {
+	}
+
+	chain ufw6-after-forward {
+	}
+
+	chain ufw6-after-logging-input {
+		limit rate 3/minute burst 10 packets counter packets 4 bytes 2620 log prefix "[UFW BLOCK] "
+	}
+
+	chain ufw6-after-logging-output {
+	}
+
+	chain ufw6-after-logging-forward {
+		limit rate 3/minute burst 10 packets counter packets 0 bytes 0 log prefix "[UFW BLOCK] "
+	}
+
+	chain ufw6-reject-input {
+	}
+
+	chain ufw6-reject-output {
+	}
+
+	chain ufw6-reject-forward {
+	}
+
+	chain ufw6-track-input {
+	}
+
+	chain ufw6-track-output {
+		meta l4proto tcp ct state new counter packets 8520 bytes 681600 accept
+		meta l4proto udp ct state new counter packets 316 bytes 36022 accept
+	}
+
+	chain ufw6-track-forward {
+	}
+
+	chain INPUT {
+		type filter hook input priority filter; policy drop;
+		counter packets 1464 bytes 113057 jump ts-input
+		counter packets 1500 bytes 118092 jump ufw6-before-logging-input
+		counter packets 1500 bytes 118092 jump ufw6-before-input
+		counter packets 4 bytes 2620 jump ufw6-after-input
+		counter packets 4 bytes 2620 jump ufw6-after-logging-input
+		counter packets 4 bytes 2620 jump ufw6-reject-input
+		counter packets 4 bytes 2620 jump ufw6-track-input
+	}
+
+	chain OUTPUT {
+		type filter hook output priority filter; policy accept;
+		counter packets 10047 bytes 801578 jump ufw6-before-logging-output
+		counter packets 10047 bytes 801578 jump ufw6-before-output
+		counter packets 8844 bytes 718270 jump ufw6-after-output
+		counter packets 8844 bytes 718270 jump ufw6-after-logging-output
+		counter packets 8844 bytes 718270 jump ufw6-reject-output
+		counter packets 8844 bytes 718270 jump ufw6-track-output
+	}
+
+	chain FORWARD {
+		type filter hook forward priority filter; policy drop;
+		counter packets 0 bytes 0 jump ts-forward
+		counter packets 0 bytes 0 jump DOCKER-USER
+		counter packets 0 bytes 0 jump DOCKER-FORWARD
+		counter packets 0 bytes 0 jump ufw6-before-logging-forward
+		counter packets 0 bytes 0 jump ufw6-before-forward
+		counter packets 0 bytes 0 jump ufw6-after-forward
+		counter packets 0 bytes 0 jump ufw6-after-logging-forward
+		counter packets 0 bytes 0 jump ufw6-reject-forward
+		counter packets 0 bytes 0 jump ufw6-track-forward
+	}
+
+	chain ufw6-logging-deny {
+		ct state invalid limit rate 3/minute burst 10 packets counter packets 0 bytes 0 return
+		limit rate 3/minute burst 10 packets counter packets 0 bytes 0 log prefix "[UFW BLOCK] "
+	}
+
+	chain ufw6-logging-allow {
+		limit rate 3/minute burst 10 packets counter packets 0 bytes 0 log prefix "[UFW ALLOW] "
+	}
+
+	chain ufw6-skip-to-policy-input {
+		counter packets 0 bytes 0 drop
+	}
+
+	chain ufw6-skip-to-policy-output {
+		counter packets 0 bytes 0 accept
+	}
+
+	chain ufw6-skip-to-policy-forward {
+		counter packets 0 bytes 0 drop
+	}
+
+	chain ufw6-user-input {
+		tcp dport 443 counter packets 0 bytes 0 accept
+		udp dport 443 counter packets 0 bytes 0 accept
+		tcp dport 80 counter packets 0 bytes 0 accept
+		tcp dport 8080 counter packets 0 bytes 0 accept
+		iifname "tailscale0" tcp dport 22 counter packets 0 bytes 0 accept
+		tcp dport 25565 counter packets 0 bytes 0 accept
+	}
+
+	chain ufw6-user-output {
+	}
+
+	chain ufw6-user-forward {
+	}
+
+	chain ufw6-user-logging-input {
+	}
+
+	chain ufw6-user-logging-output {
+	}
+
+	chain ufw6-user-logging-forward {
+	}
+
+	chain ufw6-user-limit {
+		limit rate 3/minute burst 5 packets counter packets 0 bytes 0 log prefix "[UFW LIMIT BLOCK] "
+		counter packets 0 bytes 0 reject
+	}
+
+	chain ufw6-user-limit-accept {
+		counter packets 0 bytes 0 accept
+	}
+
+	chain DOCKER {
+	}
+
+	chain DOCKER-FORWARD {
+		counter packets 0 bytes 0 jump DOCKER-CT
+		counter packets 0 bytes 0 jump DOCKER-INTERNAL
+		counter packets 0 bytes 0 jump DOCKER-BRIDGE
+	}
+
+	chain DOCKER-BRIDGE {
+	}
+
+	chain DOCKER-CT {
+	}
+
+	chain DOCKER-INTERNAL {
+	}
+
+	chain DOCKER-USER {
+	}
+
+	chain ts-input {
+		ip6 saddr fd7a:115c:a1e0::ed33:2465 iifname "lo" counter packets 0 bytes 0 accept
+		iifname "tailscale0" counter packets 2 bytes 1310 accept
+		udp dport 41641 counter packets 0 bytes 0 accept
+	}
+
+	chain ts-forward {
+		iifname "tailscale0" counter packets 0 bytes 0 meta mark set mark and 0xff00ffff xor 0x40000
+		meta mark & 0x00ff0000 == 0x00040000 counter packets 0 bytes 0 accept
+		oifname "tailscale0" counter packets 0 bytes 0 accept
+	}
+}
+# Warning: table ip nat is managed by iptables-nft, do not touch!
+table ip nat {
+	chain DOCKER {
+		ip daddr 127.0.0.1 iifname != "br-639f1ea82f21" tcp dport 5432 counter packets 0 bytes 0 dnat to 172.18.0.2:5432
+	}
+
+	chain PREROUTING {
+		type nat hook prerouting priority dstnat; policy accept;
+		fib daddr type local counter packets 256602 bytes 38129647 jump DOCKER
+	}
+
+	chain OUTPUT {
+		type nat hook output priority dstnat; policy accept;
+		ip daddr != 127.0.0.0/8 fib daddr type local counter packets 13 bytes 1792 jump DOCKER
+	}
+
+$ iptables rules, first 300 lines
+-P INPUT DROP
+-P FORWARD DROP
+-P OUTPUT ACCEPT
+-N DOCKER
+-N DOCKER-BRIDGE
+-N DOCKER-CT
+-N DOCKER-FORWARD
+-N DOCKER-INTERNAL
+-N DOCKER-USER
+-N ts-forward
+-N ts-input
+-N ufw-after-forward
+-N ufw-after-input
+-N ufw-after-logging-forward
+-N ufw-after-logging-input
+-N ufw-after-logging-output
+-N ufw-after-output
+-N ufw-before-forward
+-N ufw-before-input
+-N ufw-before-logging-forward
+-N ufw-before-logging-input
+-N ufw-before-logging-output
+-N ufw-before-output
+-N ufw-logging-allow
+-N ufw-logging-deny
+-N ufw-not-local
+-N ufw-reject-forward
+-N ufw-reject-input
+-N ufw-reject-output
+-N ufw-skip-to-policy-forward
+-N ufw-skip-to-policy-input
+-N ufw-skip-to-policy-output
+-N ufw-track-forward
+-N ufw-track-input
+-N ufw-track-output
+-N ufw-user-forward
+-N ufw-user-input
+-N ufw-user-limit
+-N ufw-user-limit-accept
+-N ufw-user-logging-forward
+-N ufw-user-logging-input
+-N ufw-user-logging-output
+-N ufw-user-output
+-A INPUT -j ts-input
+-A INPUT -j ufw-before-logging-input
+-A INPUT -j ufw-before-input
+-A INPUT -j ufw-after-input
+-A INPUT -j ufw-after-logging-input
+-A INPUT -j ufw-reject-input
+-A INPUT -j ufw-track-input
+-A FORWARD -j ts-forward
+-A FORWARD -j DOCKER-USER
+-A FORWARD -j DOCKER-FORWARD
+-A FORWARD -j ufw-before-logging-forward
+-A FORWARD -j ufw-before-forward
+-A FORWARD -j ufw-after-forward
+-A FORWARD -j ufw-after-logging-forward
+-A FORWARD -j ufw-reject-forward
+-A FORWARD -j ufw-track-forward
+-A OUTPUT -j ufw-before-logging-output
+-A OUTPUT -j ufw-before-output
+-A OUTPUT -j ufw-after-output
+-A OUTPUT -j ufw-after-logging-output
+-A OUTPUT -j ufw-reject-output
+-A OUTPUT -j ufw-track-output
+-A DOCKER -d 172.18.0.2/32 ! -i br-639f1ea82f21 -o br-639f1ea82f21 -p tcp -m tcp --dport 5432 -j ACCEPT
+-A DOCKER ! -i br-639f1ea82f21 -o br-639f1ea82f21 -j DROP
+-A DOCKER ! -i docker0 -o docker0 -j DROP
+-A DOCKER-BRIDGE -o br-639f1ea82f21 -j DOCKER
+-A DOCKER-BRIDGE -o docker0 -j DOCKER
+-A DOCKER-CT -o br-639f1ea82f21 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A DOCKER-CT -o docker0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A DOCKER-FORWARD -j DOCKER-CT
+-A DOCKER-FORWARD -j DOCKER-INTERNAL
+-A DOCKER-FORWARD -j DOCKER-BRIDGE
+-A DOCKER-FORWARD -i br-639f1ea82f21 -j ACCEPT
+-A DOCKER-FORWARD -i docker0 -j ACCEPT
+-A ts-forward -i tailscale0 -j MARK --set-xmark 0x40000/0xff0000
+-A ts-forward -m mark --mark 0x40000/0xff0000 -j ACCEPT
+-A ts-forward -s 100.64.0.0/10 -o tailscale0 -j DROP
+-A ts-forward -o tailscale0 -j ACCEPT
+-A ts-input -s 100.96.36.100/32 -i lo -j ACCEPT
+-A ts-input -i tailscale0 -j ACCEPT
+-A ts-input -p udp -m udp --dport 41641 -j ACCEPT
+-A ts-input -s 100.115.92.0/23 ! -i tailscale0 -j RETURN
+-A ts-input -s 100.64.0.0/10 ! -i tailscale0 -j DROP
+-A ufw-after-input -p udp -m udp --dport 137 -j ufw-skip-to-policy-input
+-A ufw-after-input -p udp -m udp --dport 138 -j ufw-skip-to-policy-input
+-A ufw-after-input -p tcp -m tcp --dport 139 -j ufw-skip-to-policy-input
+-A ufw-after-input -p tcp -m tcp --dport 445 -j ufw-skip-to-policy-input
+-A ufw-after-input -p udp -m udp --dport 67 -j ufw-skip-to-policy-input
+-A ufw-after-input -p udp -m udp --dport 68 -j ufw-skip-to-policy-input
+-A ufw-after-input -m addrtype --dst-type BROADCAST -j ufw-skip-to-policy-input
+-A ufw-after-logging-forward -m limit --limit 3/min --limit-burst 10 -j LOG --log-prefix "[UFW BLOCK] "
+-A ufw-after-logging-input -m limit --limit 3/min --limit-burst 10 -j LOG --log-prefix "[UFW BLOCK] "
+-A ufw-before-forward -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A ufw-before-forward -p icmp -m icmp --icmp-type 3 -j ACCEPT
+-A ufw-before-forward -p icmp -m icmp --icmp-type 11 -j ACCEPT
+-A ufw-before-forward -p icmp -m icmp --icmp-type 12 -j ACCEPT
+-A ufw-before-forward -p icmp -m icmp --icmp-type 8 -j ACCEPT
+-A ufw-before-forward -j ufw-user-forward
+-A ufw-before-input -i lo -j ACCEPT
+-A ufw-before-input -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A ufw-before-input -m conntrack --ctstate INVALID -j ufw-logging-deny
+-A ufw-before-input -m conntrack --ctstate INVALID -j DROP
+-A ufw-before-input -p icmp -m icmp --icmp-type 3 -j ACCEPT
+-A ufw-before-input -p icmp -m icmp --icmp-type 11 -j ACCEPT
+-A ufw-before-input -p icmp -m icmp --icmp-type 12 -j ACCEPT
+-A ufw-before-input -p icmp -m icmp --icmp-type 8 -j ACCEPT
+-A ufw-before-input -p udp -m udp --sport 67 --dport 68 -j ACCEPT
+-A ufw-before-input -j ufw-not-local
+-A ufw-before-input -d 224.0.0.251/32 -p udp -m udp --dport 5353 -j ACCEPT
+-A ufw-before-input -d 239.255.255.250/32 -p udp -m udp --dport 1900 -j ACCEPT
+-A ufw-before-input -j ufw-user-input
+-A ufw-before-output -o lo -j ACCEPT
+-A ufw-before-output -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A ufw-before-output -j ufw-user-output
+-A ufw-logging-allow -m limit --limit 3/min --limit-burst 10 -j LOG --log-prefix "[UFW ALLOW] "
+-A ufw-logging-deny -m conntrack --ctstate INVALID -m limit --limit 3/min --limit-burst 10 -j RETURN
+-A ufw-logging-deny -m limit --limit 3/min --limit-burst 10 -j LOG --log-prefix "[UFW BLOCK] "
+-A ufw-not-local -m addrtype --dst-type LOCAL -j RETURN
+-A ufw-not-local -m addrtype --dst-type MULTICAST -j RETURN
+-A ufw-not-local -m addrtype --dst-type BROADCAST -j RETURN
+-A ufw-not-local -m limit --limit 3/min --limit-burst 10 -j ufw-logging-deny
+-A ufw-not-local -j DROP
+-A ufw-skip-to-policy-forward -j DROP
+-A ufw-skip-to-policy-input -j DROP
+-A ufw-skip-to-policy-output -j ACCEPT
+-A ufw-track-output -p tcp -m conntrack --ctstate NEW -j ACCEPT
+-A ufw-track-output -p udp -m conntrack --ctstate NEW -j ACCEPT
+-A ufw-user-input -p tcp -m tcp --dport 443 -j ACCEPT
+-A ufw-user-input -p udp -m udp --dport 443 -j ACCEPT
+-A ufw-user-input -p tcp -m tcp --dport 80 -j ACCEPT
+-A ufw-user-input -p tcp -m tcp --dport 8080 -j ACCEPT
+-A ufw-user-input -i tailscale0 -p tcp -m tcp --dport 22 -j ACCEPT
+-A ufw-user-input -p tcp -m tcp --dport 25565 -j ACCEPT
+-A ufw-user-limit -m limit --limit 3/min -j LOG --log-prefix "[UFW LIMIT BLOCK] "
+-A ufw-user-limit -j REJECT --reject-with icmp-port-unreachable
+-A ufw-user-limit-accept -j ACCEPT
+
+$ IPv4 forwarding settings
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 0
+net.ipv4.conf.all.rp_filter = 2
+
+
+===== Tailscale =====
+
+$ tailscale version
+1.102.2
+  tailscale commit: 6cac918179d4d673bfebe2fc74f81183ddd73fea
+  long version: 1.102.2-t6cac91817-g6ff0ddc72
+  other commit: 6ff0ddc7264e38276f40986706ae4607dbab57d8
+  go version: go1.26.5 (tailscale/go 63ae404c82)
+
+$ tailscale ip -4
+100.96.36.100
+
+$ tailscale status
+100.96.36.100   continental-server        charlie.arnerstal@  linux    -                          
+100.102.113.86  charlemagne               charlie.arnerstal@  linux    idle; offers exit node     
+100.122.144.66  charlemagnes-macbook-air  charlie.arnerstal@  macOS    -                          
+100.71.19.120   desktop-vsl74s7           charlie.arnerstal@  windows  offline, last seen 4h ago  
+100.108.88.78   iphone-14                 charlie.arnerstal@  iOS      -                          
+
+$ tailscale serve status
+No serve config
+
+$ tailscale funnel status
+No serve config
+
+$ tailscale netcheck
+
+Report:
+	* Time: 2026-08-31 21:17:07.046558739+02:00
+	* UDP: true
+	* IPv4: yes, 151.177.43.100:58061
+	* IPv6: no, but OS has support
+	* MappingVariesByDestIP: false
+	* PortMapping: 
+	* Nearest DERP: Amsterdam
+	* DERP latency:
+		- ams: 25.2ms  (Amsterdam)
+		- fra: 25.2ms  (Frankfurt)
+		- lhr: 31.4ms  (London)
+		- par: 33.1ms  (Paris)
+		- hel: 35.3ms  (Helsinki)
+		- waw: 36.9ms  (Warsaw)
+		- nue: 37.3ms  (Nuremberg)
+		- mad: 48.2ms  (Madrid)
+		- nyc:         (New York City)
+		- sfo:         (San Francisco)
+		- sin:         (Singapore)
+		- syd:         (Sydney)
+		- blr:         (Bengaluru)
+		- tok:         (Tokyo)
+		- dfw:         (Dallas)
+		- sea:         (Seattle)
+		- sao:         (São Paulo)
+		- ord:         (Chicago)
+		- den:         (Denver)
+		- jnb:         (Johannesburg)
+		- mia:         (Miami)
+		- lax:         (Los Angeles)
+		- hkg:         (Hong Kong)
+		- tor:         (Toronto)
+		- dbi:         (Dubai)
+		- hnl:         (Honolulu)
+		- nai:         (Nairobi)
+		- iad:         (Ashburn)
+
+
+===== System services and scheduled work =====
+
+$ systemctl --failed --no-legend
+
+$ systemctl list-units --type=service --state=running --no-legend
+  accounts-daemon.service                loaded active running Accounts Service
+  avahi-daemon.service                   loaded active running Avahi mDNS/DNS-SD Stack
+  bluetooth.service                      loaded active running Bluetooth service
+  caddy.service                          loaded active running Caddy
+  colord.service                         loaded active running Manage, Install and Generate Color Profiles
+  contact.service                        loaded active running Continental contact website
+  cron.service                           loaded active running Regular background program processing daemon
+  cups-browsed.service                   loaded active running Make remote CUPS printers available locally
+  cups.service                           loaded active running CUPS Scheduler
+  daymark-web.service                    loaded active running Daymark web application
+  daymark-worker.service                 loaded active running Daymark reminder worker
+  dbus.service                           loaded active running D-Bus System Message Bus
+  echo-archives.service                  loaded active running The Echo Archives website and API
+  fail2ban.service                       loaded active running Fail2Ban Service
+  fwupd.service                          loaded active running Firmware update daemon
+  gdm.service                            loaded active running GNOME Display Manager
+  glances.service                        loaded active running Glances
+  gnome-remote-desktop.service           loaded active running GNOME Remote Desktop
+  grimoire-play.service                  loaded active running Grimoire multiplayer backend
+  kerneloops.service                     loaded active running Tool to automatically collect and submit kernel crash signatures
+  ModemManager.service                   loaded active running Modem Manager
+  mongod.service                         loaded active running MongoDB Database Server
+  netdata.service                        loaded active running Netdata, X-Ray Vision for your infrastructure!
+  NetworkManager.service                 loaded active running Network Manager
+  noip2.service                          loaded active running NoIP Dynamic Update Client
+  nvidia-persistenced.service            loaded active running NVIDIA Persistence Daemon
+  ollama.service                         loaded active running Ollama Service
+  polkit.service                         loaded active running Authorization Manager
+  power-profiles-daemon.service          loaded active running Power Profiles daemon
+  pulse-collector.service                loaded active running Pulse analytics collector
+  rsyslog.service                        loaded active running System Logging Service
+  rtkit-daemon.service                   loaded active running RealtimeKit Scheduling Policy Service
+  rustdesk.service                       loaded active running RustDesk
+  smartmontools.service                  loaded active running Self Monitoring and Reporting Technology (SMART) Daemon
+  snap.cups.cups-browsed.service         loaded active running Service for snap application cups.cups-browsed
+  snap.cups.cupsd.service                loaded active running Service for snap application cups.cupsd
+  snap.docker.dockerd.service            loaded active running Service for snap application docker.dockerd
+  snapd.service                          loaded active running Snap Daemon
+  ssh.service                            loaded active running OpenBSD Secure Shell server
+  status.service                         loaded active running Continental status website
+  switcheroo-control.service             loaded active running Switcheroo Control Proxy service
+  systemd-hostnamed.service              loaded active running Hostname Service
+  systemd-journald.service               loaded active running Journal Service
+  systemd-journald@echo-archives.service loaded active running Journal Service for Namespace echo-archives
+  systemd-journald@netdata.service       loaded active running Journal Service for Namespace netdata
+  systemd-logind.service                 loaded active running User Login Management
+  systemd-oomd.service                   loaded active running Userspace Out-Of-Memory (OOM) Killer
+  systemd-resolved.service               loaded active running Network Name Resolution
+  systemd-timedated.service              loaded active running Time & Date Service
+  systemd-timesyncd.service              loaded active running Network Time Synchronization
+  systemd-udevd.service                  loaded active running Rule-based Manager for Device Events and Files
+  tailscaled.service                     loaded active running Tailscale node agent
+  thermald.service                       loaded active running Thermal Daemon Service
+  udisks2.service                        loaded active running Disk Manager
+  unattended-upgrades.service            loaded active running Unattended Upgrades Shutdown
+  upower.service                         loaded active running Daemon for power management
+  user@1000.service                      loaded active running User Manager for UID 1000
+  vanguard-discord-bot.service           loaded active running Vanguard Discord Bot
+  wpa_supplicant.service                 loaded active running WPA supplicant
+
+$ systemctl list-timers --all --no-legend
+Mon 2026-08-31 21:18:27 CEST     1min 20s Mon 2026-08-31 21:13:27 CEST  3min 39s ago pulse-healthcheck.timer            pulse-healthcheck.service
+Mon 2026-08-31 21:20:00 CEST     2min 52s Mon 2026-08-31 21:10:00 CEST      7min ago sysstat-collect.timer              sysstat-collect.service
+Mon 2026-08-31 21:21:25 CEST     4min 18s Mon 2026-08-31 21:16:02 CEST   1min 4s ago echo-archives-local-monitor.timer  echo-archives-local-monitor.service
+Mon 2026-08-31 21:32:32 CEST        15min Mon 2026-08-31 20:34:30 CEST     42min ago anacron.timer                      anacron.service
+Mon 2026-08-31 21:32:44 CEST        15min Mon 2026-08-31 21:02:14 CEST     14min ago echo-archives-discovery.timer      echo-archives-discovery.service
+Mon 2026-08-31 21:48:34 CEST        31min Mon 2026-08-31 20:38:25 CEST     38min ago fwupd-refresh.timer                fwupd-refresh.service
+Mon 2026-08-31 22:34:10 CEST     1h 17min Mon 2026-08-31 19:34:10 CEST  1h 42min ago apport-autoreport.timer            apport-autoreport.service
+Mon 2026-08-31 23:20:15 CEST      2h 3min Mon 2026-08-31 01:18:31 CEST       19h ago motd-news.timer                    motd-news.service
+Tue 2026-09-01 00:00:00 CEST     2h 42min Mon 2026-08-31 00:00:00 CEST       21h ago dpkg-db-backup.timer               dpkg-db-backup.service
+Tue 2026-09-01 00:00:00 CEST     2h 42min Mon 2026-08-31 00:00:00 CEST       21h ago logrotate.timer                    logrotate.service
+Tue 2026-09-01 00:07:00 CEST     2h 49min Mon 2026-08-31 00:07:00 CEST       21h ago sysstat-summary.timer              sysstat-summary.service
+Tue 2026-09-01 02:13:20 CEST     4h 56min Mon 2026-08-31 09:44:38 CEST       11h ago man-db.timer                       man-db.service
+Tue 2026-09-01 03:15:46 CEST     5h 58min Mon 2026-08-31 03:21:32 CEST       17h ago pulse-backup.timer                 pulse-backup.service
+Tue 2026-09-01 03:17:43 CEST           6h Mon 2026-08-31 03:19:35 CEST       17h ago echo-archives-backup.timer         echo-archives-backup.service
+Tue 2026-09-01 04:05:28 CEST           6h Mon 2026-08-31 04:05:48 CEST       17h ago echo-archives-offsite-backup.timer echo-archives-offsite-backup.service
+Tue 2026-09-01 04:38:07 CEST           7h Mon 2026-08-31 11:36:38 CEST        9h ago apt-daily.timer                    apt-daily.service
+Tue 2026-09-01 06:08:35 CEST           8h Mon 2026-08-31 06:39:26 CEST       14h ago apt-daily-upgrade.timer            apt-daily-upgrade.service
+Tue 2026-09-01 15:39:06 CEST          18h Mon 2026-08-31 15:39:06 CEST  5h 38min ago update-notifier-download.timer     update-notifier-download.service
+Tue 2026-09-01 15:48:52 CEST          18h Mon 2026-08-31 15:48:52 CEST  5h 28min ago systemd-tmpfiles-clean.timer       systemd-tmpfiles-clean.service
+Sun 2026-09-06 03:10:51 CEST       5 days Sun 2026-08-30 03:10:49 CEST 1 day 18h ago e2scrub_all.timer                  e2scrub_all.service
+Mon 2026-09-07 01:03:44 CEST       6 days Mon 2026-08-31 01:21:50 CEST       19h ago fstrim.timer                       fstrim.service
+Wed 2026-09-09 15:42:52 CEST 1 week 1 day Mon 2026-08-31 14:34:40 CEST        6h ago update-notifier-motd.timer         update-notifier-motd.service
+-                                       - -                                        - snapd.snap-repair.timer            snapd.snap-repair.service
+-                                       - -                                        - ua-timer.timer                     ua-timer.service
+
+$ Selected service state
+
+--- caddy ---
+enabled
+active
+Restart=no
+User=caddy
+ReadWritePaths=
+ProtectSystem=full
+NoNewPrivileges=no
+
+--- tailscaled ---
+enabled
+active
+Restart=on-failure
+User=
+ReadWritePaths=
+ProtectSystem=no
+NoNewPrivileges=no
+
+--- docker ---
+not-found
+inactive
+Restart=no
+User=
+ReadWritePaths=
+ProtectSystem=no
+NoNewPrivileges=no
+
+--- netdata ---
+enabled
+active
+Restart=on-failure
+User=root
+ReadWritePaths=/run/netdata -/var/spool/postfix/maildrop
+ProtectSystem=full
+NoNewPrivileges=no
+
+$ loginctl show-user charlie -p Linger -p State -p Sessions
+State=active
+Sessions=3
+Linger=yes
+
+$ runuser -u charlie -- systemctl --user list-unit-files --state=enabled --no-legend
+Failed to connect to bus: No medium found
+[exit status 1]
+
+$ runuser -u charlie -- systemctl --user list-timers --all --no-legend
+Failed to connect to bus: No medium found
+[exit status 1]
+
+
+===== Running processes and current local HTTP services =====
+
+$ ps -eo pid\,user\,etimes\,comm --sort=pid
+    PID USER     ELAPSED COMMAND
+      1 root      279795 systemd
+      2 root      279795 kthreadd
+      3 root      279795 pool_workqueue_release
+      4 root      279795 kworker/R-rcu_gp
+      5 root      279795 kworker/R-sync_wq
+      6 root      279795 kworker/R-kvfree_rcu_reclaim
+      7 root      279795 kworker/R-slub_flushwq
+      8 root      279795 kworker/R-netns
+     10 root      279795 kworker/0:0H-kblockd
+     13 root      279795 kworker/R-mm_percpu_wq
+     14 root      279795 ksoftirqd/0
+     15 root      279795 rcu_preempt
+     16 root      279795 rcu_exp_par_gp_kthread_worker/0
+     17 root      279795 rcu_exp_gp_kthread_worker
+     18 root      279795 migration/0
+     19 root      279795 kprobe-optimizer
+     20 root      279795 idle_inject/0
+     21 root      279795 cpuhp/0
+     22 root      279795 cpuhp/1
+     23 root      279795 idle_inject/1
+     24 root      279795 migration/1
+     25 root      279795 ksoftirqd/1
+     27 root      279795 kworker/1:0H-kblockd
+     28 root      279795 cpuhp/2
+     29 root      279795 idle_inject/2
+     30 root      279795 migration/2
+     31 root      279795 ksoftirqd/2
+     33 root      279795 kworker/2:0H-kblockd
+     34 root      279795 cpuhp/3
+     35 root      279795 idle_inject/3
+     36 root      279795 migration/3
+     37 root      279795 ksoftirqd/3
+     39 root      279795 kworker/3:0H-kblockd
+     40 root      279795 cpuhp/4
+     41 root      279795 idle_inject/4
+     42 root      279795 migration/4
+     43 root      279795 ksoftirqd/4
+     45 root      279795 kworker/4:0H-kblockd
+     46 root      279795 cpuhp/5
+     47 root      279795 idle_inject/5
+     48 root      279795 migration/5
+     49 root      279795 ksoftirqd/5
+     52 root      279795 kdevtmpfs
+     53 root      279795 kworker/R-inet_frag_wq
+     54 root      279795 rcu_tasks_kthread
+     55 root      279795 rcu_tasks_rude_kthread
+     56 root      279795 kauditd
+     57 root      279795 khungtaskd
+     58 root      279795 oom_reaper
+     61 root      279795 kworker/R-writeback
+     62 root      279795 kcompactd0
+     63 root      279795 ksmd
+     64 root      279795 khugepaged
+     65 root      279795 kworker/R-kblockd
+     66 root      279795 kworker/R-blkcg_punt_bio
+     67 root      279795 kworker/R-kintegrityd
+     68 root      279795 irq/9-acpi
+     72 root      279795 kworker/R-tpm_dev_wq
+     73 root      279795 kworker/R-ata_sff
+     74 root      279795 kworker/R-md_bitmap
+     75 root      279795 kworker/R-md_llbitmap_io
+     76 root      279795 kworker/R-md_llbitmap_unplug
+     77 root      279795 kworker/R-edac-poller
+     78 root      279795 kworker/R-devfreq_wq
+     79 root      279795 watchdogd
+     80 root      279795 kworker/R-quota_events_unbound
+     82 root      279795 kswapd0
+     83 root      279795 ecryptfs-kthread
+     84 root      279795 kworker/R-kthrotld
+     85 root      279795 irq/122-aerdrv
+     86 root      279795 irq/122-pcie-dpc
+     87 root      279795 irq/123-aerdrv
+     88 root      279795 irq/123-pcie-dpc
+     89 root      279795 irq/124-aerdrv
+     90 root      279795 irq/124-pcie-dpc
+     91 root      279795 kworker/R-acpi_thermal_pm
+     92 root      279795 hwrng
+     93 root      279795 kworker/R-mld
+     94 root      279795 kworker/R-ipv6_addrconf
+     95 root      279795 kworker/R-kstrp
+     99 root      279795 kworker/u25:0-rb_allocator
+    114 root      279794 kworker/R-charger_manager
+    185 root      279794 scsi_eh_0
+    186 root      279794 kworker/R-scsi_tmf_0
+    188 root      279794 scsi_eh_1
+    189 root      279794 kworker/R-nvme-wq
+    190 root      279794 kworker/R-scsi_tmf_1
+    191 root      279794 kworker/R-nvme-reset-wq
+    192 root      279794 scsi_eh_2
+    193 root      279794 kworker/R-scsi_tmf_2
+    194 root      279794 scsi_eh_3
+    195 root      279794 kworker/R-scsi_tmf_3
+    196 root      279794 kworker/R-nvme-delete-wq
+    197 root      279794 scsi_eh_4
+    198 root      279794 kworker/R-scsi_tmf_4
+    199 root      279794 kworker/R-nvme-auth-wq
+    200 root      279794 scsi_eh_5
+    201 root      279794 kworker/R-scsi_tmf_5
+    251 root      279793 nv_queue
+    252 root      279793 nv_queue
+    253 root      279793 nv_open_q
+    254 root      279793 kworker/4:1H-kblockd
+    256 root      279793 kworker/5:2H-kblockd
+    257 root      279793 kworker/0:1H-kblockd
+    261 root      279783 nvidia-modeset/kthread_q
+    262 root      279783 nvidia-modeset/deferred_close_kthread_q
+    263 root      279783 irq/142-nvidia
+    264 root      279783 nvidia
+    265 root      279783 nv_queue
+    274 root      279783 kworker/1:1H-kblockd
+    275 root      279783 kworker/2:1H-kblockd
+    497 root      279780 jbd2/nvme0n1p2-8
+    498 root      279780 kworker/R-ext4-rsv-conversion
+    549 root      279780 systemd-journal
+    598 root      279780 kworker/3:1H-kblockd
+    616 root      279780 systemd-udevd
+    676 root      279780 psimon
+    758 root      279779 UVM global queue
+    759 root      279779 UVM deferred release queue
+    761 root      279779 UVM Tools Event Queue
+    781 root      279779 irq/143-mei_me
+    930 root      279779 kworker/R-cfg80211
+    942 root      279779 irq/145-iwlwifi
+    943 root      279779 kworker/u25:1-hci0
+   1285 systemd+  279778 systemd-oomd
+   1286 systemd+  279778 systemd-resolve
+   1287 systemd+  279778 systemd-timesyn
+   1309 avahi     279776 avahi-daemon
+   1312 root      279776 bluetoothd
+   1315 message+  279776 dbus-daemon
+   1318 gnome-r+  279776 gnome-remote-de
+   1327 polkitd   279776 polkitd
+   1331 root      279776 power-profiles-
+   1332 nvidia-+  279776 nvidia-persiste
+   1340 root      279776 smartd
+   1343 root      279776 snapd
+   1344 root      279776 accounts-daemon
+   1345 root      279776 cron
+   1346 root      279776 switcheroo-cont
+   1348 root      279776 systemd-logind
+   1349 root      279776 thermald
+   1351 root      279776 udisksd
+   1367 root      279776 wpa_supplicant
+   1372 avahi     279776 avahi-daemon
+   1420 syslog    279776 rsyslogd
+   1529 root      279776 ModemManager
+   1539 root      279776 NetworkManager
+   1547 root      279776 upowerd
+   1645 root      279775 fail2ban-server
+   1646 root      279775 glances
+   1651 charlie   279775 node
+   1652 root      279775 run-cups-browse
+   1654 root      279775 run-cupsd
+   1659 root      279775 tailscaled
+   1661 root      279775 unattended-upgr
+   1692 root      279775 rustdesk
+   1693 charlie   279775 systemd
+   1694 root      279775 sshd
+   1701 charlie   279775 (sd-pam)
+   1708 root      279775 gdm3
+   1916 charlie   279774 node
+   1919 charlie   279774 pipewire
+   1924 charlie   279774 pipewire
+   1926 charlie   279774 node
+   1929 charlie   279774 node
+   1930 charlie   279774 wireplumber
+   1931 charlie   279774 pipewire-pulse
+   1942 charlie   279774 dbus-daemon
+   1983 rtkit     279774 rtkit-daemon
+   2053 charlie   279774 xdg-document-po
+   2080 charlie   279774 xdg-permission-
+   2104 root      279774 krfcommd
+   2106 root      279774 fusermount3
+   2308 root      279773 cupsd
+   2309 root      279773 cups-proxyd
+   2443 colord    279773 colord
+   2484 root      279773 dockerd
+   2580 root      279773 run-cups-browse
+   2976 root      279771 containerd
+   3236 charlie   279769 node
+   3242 charlie   279769 npm run start:s
+   3247 mongodb   279769 mongod
+   3251 netdata   279769 netdata
+   3257 nobody    279769 noip2
+   3258 charlie   279769 node
+   3265 root      279769 systemd-journal
+   3268 root      279769 systemd-journal
+   3270 kernoops  279769 kerneloops
+   3303 kernoops  279769 kerneloops
+   3467 netdata   279768 spawn-plugins
+   3476 charlie   279768 sh
+   3478 charlie   279768 node
+   4618 charlie   279767 node
+   4935 root      279766 ebpf-go.plugin
+   4942 netdata   279766 otel-plugin
+   4959 netdata   279766 go.d.plugin
+   4966 netdata   279766 ibm.d.plugin
+   4968 netdata   279766 sd-jrnl.plugin
+   4971 netdata   279766 apps.plugin
+   4973 netdata   279766 scripts.d.plugi
+   4974 root      279766 ebpf.plugin
+   4977 netdata   279766 NETWORK-VIEWER
+   5021 netdata   279766 spawn-setns
+   5103 netdata   279766 otel-plugin
+   5157 netdata   279766 otel-plugin
+   5200 netdata   279766 otel-plugin
+   6462 netdata   279764 nvidia-smi
+   6886 root      279755 gdm-session-wor
+   6960 charlie   279752 gnome-keyring-d
+   6990 charlie   279751 gdm-wayland-ses
+   6994 charlie   279751 gnome-session-b
+   7054 charlie   279751 gcr-ssh-agent
+   7055 charlie   279751 gnome-session-c
+   7073 charlie   279751 gvfsd
+   7081 charlie   279751 gvfsd-fuse
+   7090 charlie   279751 gnome-session-b
+   7114 charlie   279751 at-spi-bus-laun
+   7128 charlie   279751 dbus-daemon
+   7129 charlie   279751 gnome-shell
+   7150 root      279751 nvidia-drm/timeline-b
+   7381 charlie   279751 at-spi2-registr
+   7420 charlie   279750 gnome-shell-cal
+   7439 charlie   279750 evolution-sourc
+   7448 charlie   279750 dconf-service
+   7486 charlie   279750 gvfsd-metadata
+   7503 charlie   279750 goa-daemon
+   7522 charlie   279750 goa-identity-se
+   7540 charlie   279750 evolution-calen
+   7579 charlie   279750 evolution-addre
+   7584 charlie   279750 gjs
+   7591 charlie   279750 Xwayland
+   7606 charlie   279750 ibus-daemon
+   7608 charlie   279750 gsd-a11y-settin
+   7612 charlie   279750 gsd-color
+   7613 charlie   279750 gsd-datetime
+   7618 charlie   279750 gsd-housekeepin
+   7628 charlie   279750 gsd-keyboard
+   7630 charlie   279750 gsd-media-keys
+   7634 charlie   279750 gsd-power
+   7636 charlie   279750 gsd-print-notif
+   7638 charlie   279750 gsd-rfkill
+   7639 charlie   279750 gsd-screensaver
+   7640 charlie   279750 gsd-sharing
+   7643 charlie   279750 gsd-smartcard
+   7644 charlie   279750 gsd-sound
+   7645 charlie   279750 gsd-wacom
+   7663 charlie   279750 gsd-disk-utilit
+   7716 charlie   279750 evolution-alarm
+   7781 charlie   279750 ibus-memconf
+   7786 charlie   279750 ibus-extension-
+   7794 charlie   279750 gvfs-udisks2-vo
+   7798 charlie   279750 ibus-portal
+   7822 charlie   279750 gsd-printer
+   7857 charlie   279750 gvfs-mtp-volume
+   7863 charlie   279750 gvfs-afc-volume
+   7869 charlie   279750 gvfs-goa-volume
+   7874 charlie   279750 gvfs-gphoto2-vo
+   7920 charlie   279750 ibus-engine-sim
+   7946 root      279750 nvidia-drm/timeline-c
+   7949 charlie   279749 gvfsd-trash
+   8019 charlie   279749 tracker-miner-f
+   8021 charlie   279749 xdg-desktop-por
+   8027 charlie   279749 xdg-desktop-por
+   8044 charlie   279749 gjs
+   8052 charlie   279749 gsd-xsettings
+   8096 charlie   279749 ibus-x11
+   8123 charlie   279749 xdg-desktop-por
+   8131 charlie   279749 mutter-x11-fram
+   8196 charlie   279749 gjs
+   8637 charlie   279746 user-session-he
+   8644 charlie   279746 python
+   8756 charlie   279746 snapd-desktop-i
+  13097 charlie   279699 gnome-terminal
+  13098 charlie   279699 gnome-terminal.
+  13104 charlie   279699 gnome-terminal-
+  13169 charlie   279699 bash
+  13938 charlie   279690 update-notifier
+  19144 charlie   279630 deja-dup-monito
+  29457 charlie   279510 deja-dup
+  34559 charlie   279451 java
+  35794 charlie   279437 bash
+  36499 charlie   279429 node
+  36506 charlie   279429 codex
+  37100 root      279426 fwupd
+  37198 charlie   279426 node
+  41030 charlie   279400 codex-code-mode
+ 145214 charlie   278198 bash
+ 168147 root      277974 containerd-shim
+ 168189 70        277974 postgres
+ 168472 root      277974 docker-proxy
+ 168519 70        277974 postgres
+ 168520 70        277974 postgres
+ 168522 70        277974 postgres
+ 168523 70        277974 postgres
+ 168524 70        277974 postgres
+ 218510 root      277397 kworker/5:1H-kblockd
+ 219750 charlie   277383 bash
+ 250888 charlie   277022 bash
+ 594790 root       76627 cupsd
+ 594791 lp         76627 dbus
+ 594793 cups-br+   76627 cups-browsed
+ 770246 charlie   270967 dart:firmware-n
+ 874680 root       24141 psimon
+1179334 netdata    20564 debugfs.plugin
+1179579 root       20561 nfacct.plugin
+2328319 root        7071 kworker/u24:3-ext4-rsv-conversion
+2515919 root        4869 kworker/u24:1-writeback
+2643359 root        3372 kworker/u24:4-writeback
+2711445 root        2573 sleep
+2724920 netdata     2414 bash
+2732531 root        2324 sudo
+2732532 charlie     2324 rustdesk
+2732544 root        2324 sudo
+2732562 charlie     2324 rustdesk
+2734554 70          2303 postgres
+2743043 70          2203 postgres
+2778650 root        1784 kworker/2:0-cgroup_free
+2803194 charlie     1496 rustdesk
+2803226 root        1496 vidmem lazy free
+2803229 root        1496 UVM GPU1 BH
+2803230 root        1496 UVM GPU1 KC
+2803269 root        1496 nvidia-drm/timeline-110
+2803278 root        1496 nvidia-drm/timeline-111
+2803293 root        1496 nvidia-drm/timeline-112
+2808901 root        1430 kworker/3:1-cgroup_release
+2818225 root        1321 kworker/4:0-events
+2821491 root        1283 kworker/u24:5-flush-259:0
+2842471 root        1036 kworker/0:0-cgroup_free
+2850145 root         946 kworker/1:2-cgroup_release
+2854695 root         892 kworker/5:0-cgroup_free
+2858924 root         843 kworker/u24:2-flush-259:0
+2875187 root         657 kworker/0:2-events
+2878860 root         614 kworker/1:1-mm_percpu_wq
+2881184 root         587 kworker/4:1-cgroup_release
+2888544 root         499 kworker/5:2-cgroup_release
+2892227 root         456 kworker/2:1-cgroup_release
+2896848 root         401 kworker/3:0-cgroup_free
+2905328 root         302 kworker/1:0-events
+2905804 root         297 kworker/0:1-events
+2907639 root         275 kworker/4:2-cgroup_free
+2916509 root         171 kworker/u24:0-ext4-rsv-conversion
+2919379 root         139 kworker/5:1-events
+2921811 root         111 kworker/2:2-events
+2926544 root          56 kworker/3:2-events
+2930053 charlie       15 bash
+2930467 root          10 sudo
+2930675 root           7 sudo
+2930676 root           7 bash
+2930693 root           7 systemd-hostnam
+2930710 root           7 systemd-timedat
+2930760 root           7 kworker/5:0H-kblockd
+2931355 root           1 kworker/u24:6
+2931356 root           1 kworker/u24:7-ext4-rsv-conversion
+2931524 root           0 ps
+3056706 charlie   195310 bash
+3057946 charlie   195295 node
+3057953 charlie   195295 codex
+3058785 charlie   195291 node
+3066106 charlie   195225 codex-code-mode
+3096357 charlie   194897 node
+3096364 charlie   194897 codex
+3227476 charlie   193386 node
+3228590 charlie   193378 codex-code-mode
+3288701 charlie   192721 bash
+3289184 ollama    192715 ollama
+3289217 echo-ar+  192715 node
+3289290 caddy     192715 caddy
+3331815 charlie   192219 node
+3331822 charlie   192219 codex
+3334917 charlie   192202 node
+3336185 charlie   192193 codex-code-mode
+3353051 charlie   192005 next-server (v1
+3353175 charlie   192004 MainThread
+
+$ Local HTTP HEAD checks
+
+--- http://127.0.0.1:8787/ ---
+HTTP/1.1 200 OK
+Content-Security-Policy: default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: https:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' http: https: ws: wss:; font-src 'self' data:;
+Cross-Origin-Opener-Policy: same-origin-allow-popups
+Permissions-Policy: camera=(), microphone=(), geolocation=()
+Referrer-Policy: strict-origin-when-cross-origin
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Cache-Control: no-cache
+Content-Type: text/html; charset=utf-8
+Date: Mon, 31 Aug 2026 19:17:07 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+
+
+--- http://127.0.0.1:8788/ ---
+HTTP/1.1 200 OK
+X-Powered-By: Express
+Accept-Ranges: bytes
+Cache-Control: public, max-age=0
+Last-Modified: Mon, 27 Apr 2026 05:35:39 GMT
+ETag: W/"1c8-19dcd6fa7b3"
+Content-Type: text/html; charset=utf-8
+Content-Length: 456
+Date: Mon, 31 Aug 2026 19:17:07 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+
+
+--- http://127.0.0.1:8789/ ---
+HTTP/1.1 404 Not Found
+content-type: application/json; charset=utf-8
+cache-control: no-store
+access-control-allow-methods: GET,POST,PATCH,DELETE,OPTIONS
+access-control-allow-headers: authorization,content-type
+vary: Origin
+x-content-type-options: nosniff
+referrer-policy: same-origin
+access-control-allow-origin: *
+Date: Mon, 31 Aug 2026 19:17:07 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+
+
+--- http://127.0.0.1:8790/ ---
+curl: (7) Failed to connect to 127.0.0.1 port 8790 after 0 ms: Couldn't connect to server
+
+
+===== Caddy configuration summary =====
+
+$ caddy version
+v2.11.4 h1:XKxkMTgNSizEvKG6QHue6cAsFOteU2qA61w2tKkCWi0=
+
+$ caddy validate --config /etc/caddy/Caddyfile
+{"level":"info","ts":1788203827.2923627,"msg":"using config from file","file":"/etc/caddy/Caddyfile"}
+{"level":"info","ts":1788203827.2972085,"msg":"adapted config to JSON","adapter":"caddyfile"}
+{"level":"warn","ts":1788203827.2972295,"msg":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies","adapter":"caddyfile","file":"/etc/caddy/Caddyfile","line":88}
+{"level":"info","ts":1788203827.2983484,"logger":"http.auto_https","msg":"server is listening only on the HTTPS port but has no TLS connection policies; adding one to enable TLS","server_name":"srv0","https_port":443}
+{"level":"info","ts":1788203827.298363,"logger":"tls.cache.maintenance","msg":"started background certificate maintenance","cache":"0x9c515ea1680"}
+{"level":"info","ts":1788203827.298386,"logger":"http.auto_https","msg":"enabling automatic HTTP->HTTPS redirects","server_name":"srv0"}
+{"level":"info","ts":1788203827.3011122,"logger":"tls.cache.maintenance","msg":"stopped background certificate maintenance","cache":"0x9c515ea1680"}
+{"level":"info","ts":1788203827.3011403,"logger":"http","msg":"servers shutting down with eternal grace period"}
+Valid configuration
+
+$ Caddy site labels
+13:continental-hub.com, www.continental-hub.com {
+15:	file_server
+18:mpmc.ddns.net {
+19:	handle /api/health {
+20:		reverse_proxy 127.0.0.1:5000
+23:	handle /api/auth/* {
+24:		reverse_proxy 127.0.0.1:5000
+27:	handle /api/grimoire/* {
+28:		reverse_proxy 127.0.0.1:5000
+31:	handle /api/* {
+32:		reverse_proxy 127.0.0.1:8080
+35:	handle /ws/* {
+36:		reverse_proxy 127.0.0.1:8080
+40:grimoire.continental-hub.com {
+41:	redir /login /login/ 308
+43:	handle /api/auth/* {
+44:		reverse_proxy 127.0.0.1:5000
+47:	handle /api/grimoire/* {
+48:		reverse_proxy 127.0.0.1:5000
+51:	handle {
+52:		reverse_proxy 127.0.0.1:8787
+56:auth.continental-hub.com {
+57:	handle /api/health {
+58:		reverse_proxy 127.0.0.1:5000
+61:	handle /api/auth/* {
+62:		reverse_proxy 127.0.0.1:5000
+65:	handle /api/grimoire/* {
+66:		reverse_proxy 127.0.0.1:5000
+70:vanguard.continental-hub.com {
+71:	reverse_proxy 127.0.0.1:8090
+74:blueprint.continental-hub.com {
+75:	reverse_proxy 127.0.0.1:3000
+78:contact.continental-hub.com {
+79:	handle /api/health {
+80:		reverse_proxy 127.0.0.1:3002
+83:	handle {
+84:		reverse_proxy 127.0.0.1:3002
+89:pulse.continental-hub.com {
+107:	route {
+108:		reverse_proxy /api/* 127.0.0.1:8789
+109:		reverse_proxy /v1/* 127.0.0.1:8789
+113:		file_server
+118:status.continental-hub.com {
+119:	reverse_proxy 127.0.0.1:3003
+123:aegis.continental-hub.com {
+124:	reverse_proxy 127.0.0.1:3004
+127:login.continental-hub.com {
+128:	handle /api/health {
+129:		reverse_proxy 127.0.0.1:5000
+132:	handle /api/auth/* {
+133:		reverse_proxy 127.0.0.1:5000
+136:	handle /api/grimoire/* {
+137:		reverse_proxy 127.0.0.1:5000
+142:	file_server
+164:echoarchives.net {
+175:	route {
+179:		reverse_proxy 127.0.0.1:3010 {
+188:www.echoarchives.net {
+197:	route {
+199:		redir https://echoarchives.net{uri} permanent
+203:echo.continental-hub.com {
+209:	redir https://echoarchives.net{uri} permanent
+214:daymark.continental-hub.com {
+228:    reverse_proxy 127.0.0.1:3005 {
+
+$ Caddy routing directives
+15:	file_server
+19:	handle /api/health {
+20:		reverse_proxy 127.0.0.1:5000
+23:	handle /api/auth/* {
+24:		reverse_proxy 127.0.0.1:5000
+27:	handle /api/grimoire/* {
+28:		reverse_proxy 127.0.0.1:5000
+31:	handle /api/* {
+32:		reverse_proxy 127.0.0.1:8080
+35:	handle /ws/* {
+36:		reverse_proxy 127.0.0.1:8080
+41:	redir /login /login/ 308
+43:	handle /api/auth/* {
+44:		reverse_proxy 127.0.0.1:5000
+47:	handle /api/grimoire/* {
+48:		reverse_proxy 127.0.0.1:5000
+51:	handle {
+52:		reverse_proxy 127.0.0.1:8787
+57:	handle /api/health {
+58:		reverse_proxy 127.0.0.1:5000
+61:	handle /api/auth/* {
+62:		reverse_proxy 127.0.0.1:5000
+65:	handle /api/grimoire/* {
+66:		reverse_proxy 127.0.0.1:5000
+71:	reverse_proxy 127.0.0.1:8090
+75:	reverse_proxy 127.0.0.1:3000
+79:	handle /api/health {
+80:		reverse_proxy 127.0.0.1:3002
+83:	handle {
+84:		reverse_proxy 127.0.0.1:3002
+107:	route {
+108:		reverse_proxy /api/* 127.0.0.1:8789
+109:		reverse_proxy /v1/* 127.0.0.1:8789
+113:		file_server
+119:	reverse_proxy 127.0.0.1:3003
+124:	reverse_proxy 127.0.0.1:3004
+128:	handle /api/health {
+129:		reverse_proxy 127.0.0.1:5000
+132:	handle /api/auth/* {
+133:		reverse_proxy 127.0.0.1:5000
+136:	handle /api/grimoire/* {
+137:		reverse_proxy 127.0.0.1:5000
+142:	file_server
+175:	route {
+176:		# Keep the peer gate and terminal handler in one literal-order route.
+177:		# A separate top-level route is sorted ahead of abort by the adapter.
+179:		reverse_proxy 127.0.0.1:3010 {
+197:	route {
+199:		redir https://echoarchives.net{uri} permanent
+209:	redir https://echoarchives.net{uri} permanent
+228:    reverse_proxy 127.0.0.1:3005 {
+
+
+===== Docker summary =====
+
+$ docker version
+Client:
+ Version:           29.6.1
+ API version:       1.55
+ Go version:        go1.26.5
+ Git commit:        8900f1d
+ Built:             Thu Jul 16 20:08:21 2026
+ OS/Arch:           linux/amd64
+ Context:           default
+
+Server:
+ Engine:
+  Version:          29.6.1
+  API version:      1.55 (minimum version 1.40)
+  Go version:       go1.26.5
+  Git commit:       8ec5ab3
+  Built:            Thu Jul 16 20:09:02 2026
+  OS/Arch:          linux/amd64
+  Experimental:     false
+ containerd:
+  Version:          v2.3.3
+  GitCommit:        aad11006b869517fcd3009450b6f82da282e1a9b
+ runc:
+  Version:          1.5.1
+  GitCommit:        
+ docker-init:
+  Version:          0.19.0
+  GitCommit:        de40ad0
+
+$ docker info --format ServerVersion=\{\{.ServerVersion\}\}\\nDockerRootDir=\{\{.DockerRootDir\}\}\\nNCPU=\{\{.NCPU\}\}\\nMemTotal=\{\{.MemTotal\}\}\\n
+ServerVersion=29.6.1\nDockerRootDir=/var/snap/docker/common/var-lib-docker\nNCPU=6\nMemTotal=16665620480\n
+
+$ docker ps --format table\ \{\{.ID\}\}\\t\{\{.Image\}\}\\t\{\{.Ports\}\}\\t\{\{.Names\}\}
+CONTAINER ID   IMAGE                PORTS                      NAMES
+cf1fcbe3d5cb   postgres:17-alpine   127.0.0.1:5432->5432/tcp   daymark-postgres-1
+
+$ Continental Cloud compose status
+error while interpolating services.continental-cloud.environment.CLOUD_STORAGE_ID: required variable CLOUD_STORAGE_ID is missing a value: Set this to the existing .continental/storage-id value
+[exit status 1]
+
+
+===== Continental Cloud repository =====
+
+$ git -C /home/charlie/continental-cloud status --short --branch
+## main...origin/main
+?? collect-host-report.sh
+?? host-report.txt
+
+$ git -C /home/charlie/continental-cloud log -8 --oneline --decorate
+6feff01 (HEAD -> main, origin/main, origin/HEAD) Add durable folder synchronization
+a4448fb Initial commit
+
+$ git -C /home/charlie/continental-cloud diff --stat
+
+$ Tracked top-level files
+Caddyfile.example 664 charlie:charlie 294 bytes
+collect-host-report.sh 664 charlie:charlie 9424 bytes
+dist/cli.js 664 charlie:charlie 2328 bytes
+dist/cli.js.map 664 charlie:charlie 2217 bytes
+dist/server.js 664 charlie:charlie 510 bytes
+dist/server.js.map 664 charlie:charlie 712 bytes
+dist/sync-cli.js 664 charlie:charlie 4145 bytes
+dist/sync-cli.js.map 664 charlie:charlie 4025 bytes
+docker-compose.yml 664 charlie:charlie 568 bytes
+Dockerfile 664 charlie:charlie 512 bytes
+.env.example 664 charlie:charlie 1132 bytes
+.gitignore 664 charlie:charlie 75 bytes
+host-report.txt 600 root:root 96887 bytes
+package.json 664 charlie:charlie 1132 bytes
+package-lock.json 664 charlie:charlie 32064 bytes
+public/icon.svg 664 charlie:charlie 379 bytes
+public/index.html 664 charlie:charlie 7584 bytes
+public/manifest.webmanifest 664 charlie:charlie 338 bytes
+public/style.css 664 charlie:charlie 18239 bytes
+public/sw.js 664 charlie:charlie 1199 bytes
+README.md 664 charlie:charlie 12305 bytes
+scripts/copy-static.mjs 664 charlie:charlie 343 bytes
+src/cli.ts 664 charlie:charlie 2035 bytes
+src/server.ts 664 charlie:charlie 477 bytes
+src/sync-cli.ts 664 charlie:charlie 3762 bytes
+SYNC_PROTOCOL.md 664 charlie:charlie 4680 bytes
+tsconfig.json 664 charlie:charlie 406 bytes
+
+$ Project configuration without secrets
+{
+  "name": "continental-cloud",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A self-hosted private cloud drive for the Continental ecosystem.",
+  "type": "module",
+  "bin": {
+    "cloud": "./dist/cli.js",
+    "cloud-sync": "./dist/sync-cli.js"
+  },
+  "scripts": {
+    "dev": "npm run build && concurrently --kill-others \"tsc -p tsconfig.json --watch\" \"node --env-file-if-exists=.env --watch --enable-source-maps dist/server.js\"",
+    "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs",
+    "start": "node --env-file-if-exists=.env --enable-source-maps dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "lint": "npm run typecheck",
+    "doctor": "npm run build && node dist/cli.js doctor",
+    "scan": "npm run build && node dist/cli.js scan",
+    "cleanup": "npm run build && node dist/cli.js cleanup"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "dependencies": {
+    "sharp": "^0.35.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "concurrently": "^9.2.1",
+    "typescript": "^5.8.3"
+  }
+}
+
+services:
+  continental-cloud:
+    build: .
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      CLOUD_HOST: 0.0.0.0
+      CLOUD_PORT: 8787
+      CLOUD_STORAGE_PATH: /storage
+      CLOUD_STORAGE_ID: ${CLOUD_STORAGE_ID:?Set this to the existing .continental/storage-id value}
+      CLOUD_AUTH_TOKEN: ${CLOUD_AUTH_TOKEN:?Set a long random token}
+      CLOUD_ALLOW_STORAGE_INIT: "false"
+    volumes:
+      - /mnt/continental-cloud:/storage
+    ports:
+      # Loopback only: Caddy/Tailscale owns any external exposure.
+      - 127.0.0.1:8787:8787
+
+FROM node:24-bookworm-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY tsconfig.json ./
+COPY scripts ./scripts
+COPY public ./public
+COPY src ./src
+RUN npm run build && npm prune --omit=dev
+
+FROM node:24-bookworm-slim
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=build /app/package.json /app/package-lock.json ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+USER node
+EXPOSE 8787
+CMD ["node", "--enable-source-maps", "dist/server.js"]
+
+$ Environment file inventory only
+.env.example 664 charlie:charlie 1132 bytes
+
+$ Project dependency/build state
+59M	/home/charlie/continental-cloud/node_modules
+672K	/home/charlie/continental-cloud/dist
+
+
+===== Security-sensitive values intentionally omitted =====
+The report does not include:
+- Environment variables or .env contents
+- Docker container environment values
+- Process command-line arguments
+- Private keys, certificates, tokens, cookies, or Tailscale state files
+- Full application logs
+- Any mount, format, repair, package-install, service-restart, or write operation
+
+===== End of report =====

@@ -10,9 +10,10 @@ Without pairing, a client may use the explicit lifecycle:
 
 1. Generate and persist a UUID locally.
 2. `POST /api/sync/devices` with `deviceId`, `name`, `platform`, and `clientVersion`.
-3. `POST /api/sync/mappings` with a local mapping UUID, `cloudPath`, `localPath`, `paused` state, and `policy`.
-4. On first use only, request `GET /api/sync/snapshot?path=<cloud path>`. Apply it safely, record its cursor, and acknowledge it through `POST /api/sync/ack`.
-5. Thereafter request `GET /api/sync/changes?after=<cursor>&limit=<1..1000>`. The response has ordered `changes`, `nextCursor`, and `hasMore`; keep paging before advancing past a page.
+3. Fetch `GET /api/sync/mappings` before publishing local mappings. Adopt mappings created in the web console, including their paused state and local path, after validating the local root. Existing local mappings publish their current metadata; a console path change resets only that mapping's local index and never deletes the old local folder.
+4. `POST /api/sync/mappings` with a local mapping UUID, `cloudPath`, `localPath`, `paused` state, and `policy`.
+5. On first use only, request `GET /api/sync/snapshot?path=<cloud path>`. Apply it safely, record its cursor, and acknowledge it through `POST /api/sync/ack`.
+6. Thereafter request `GET /api/sync/changes?after=<cursor>&limit=<1..1000>`. The response has ordered `changes`, `nextCursor`, and `hasMore`; keep paging before advancing past a page.
 
 The reference client offers two policies. `project` is the default and excludes common dependency, virtual-environment, build, cache, coverage, and temporary paths; `exact` has no policy exclusions and still applies the normal symlink, traversal, and platform-name safety checks. Excluded local paths are never uploaded or deleted remotely, and an excluded remote path is never downloaded.
 

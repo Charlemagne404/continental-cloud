@@ -1,0 +1,13 @@
+{
+	admin off
+	auto_https off
+}
+
+# Headscale-only access to Continental Cloud. The transport to this listener
+# is encrypted by the tailnet; the app remains published only on loopback.
+http://charlie-legion-t530-28icb.tail.continental-hub.com:8790, http://100.64.0.2:8790 {
+	bind 100.64.0.2
+	reverse_proxy 127.0.0.1:8790 {
+		header_down Set-Cookie "(?i); Secure" ""
+	}
+}

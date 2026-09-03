@@ -170,6 +170,14 @@ From a folder's details panel, choose **Set up sync**. Select **Coding projects*
 Install/build Continental Cloud normally, then on each device:
 
 ```bash
+cloud-sync setup --server https://cloud.your-tailnet.ts.net
+```
+
+The setup wizard asks for the access token, gives the device a friendly name, creates `~/Continental Cloud` when needed, and asks which cloud folder to sync. It runs the first sync and offers to keep live sync running, so most devices need only this one command. If the command is run without arguments in a terminal, it opens the same wizard. Run `cloud-sync setup` again later to add another folder to an already connected device.
+
+For scripts or fully specified setups, the lower-level commands remain available:
+
+```bash
 cloud-sync init --server https://cloud.your-tailnet.ts.net --token 'your-cloud-token' --name 'MacBook'
 cloud-sync map add --cloud /Projects/Meridian --local "$HOME/Continental Cloud/Meridian"
 cloud-sync install       # start automatically at user login
@@ -193,13 +201,13 @@ cloud-sync map add --cloud /Projects/Meridian --local "$env:USERPROFILE\Continen
 cloud-sync start
 ```
 
-Useful controls are `cloud-sync status`, `cloud-sync sync` for a manual run, `cloud-sync pause <mapping-id>`, and `cloud-sync resume <mapping-id>`. `cloud-sync install` installs a per-user launch agent, systemd user unit, or Windows logon task; `cloud-sync uninstall` removes only that auto-start registration and leaves the sync config and files untouched. The device ID, selected mappings, policy, cursor, local node/revision state, pending operations, progress summary, and interrupted-transfer information are held in a restrictive config file under the platform config directory: `%LOCALAPPDATA%\Continental Cloud Sync` on Windows, `~/Library/Application Support/Continental Cloud Sync` on macOS, or `$XDG_CONFIG_HOME/continental-cloud-sync` on Linux. Use `--config <path>` for automation or isolated tests.
+Useful controls are `cloud-sync status`, `cloud-sync sync` for a manual run, `cloud-sync pause <mapping-id>`, and `cloud-sync resume <mapping-id>`. The setup wizard and the web app's **Folder sync** screen use the same mapping records, so adding a folder or pausing one in either place is picked up by the desktop client the next time it connects. The device ID, selected mappings, cursor, local node/revision state, pending operations, and interrupted-transfer information are held in a restrictive config file under the platform config directory: `%LOCALAPPDATA%\Continental Cloud Sync` on Windows, `~/Library/Application Support/Continental Cloud Sync` on macOS, or `$XDG_CONFIG_HOME/continental-cloud-sync` on Linux. Use `--config <path>` for automation or isolated tests.
 
 Mappings are selective and names need not match: cloud `/Projects/Meridian` can map to any safe local directory. The initial snapshot is only for mapping setup; routine synchronization consumes journal changes since the stored cursor. Downloads stream through an adjacent temporary file and atomically rename only after the checksum matches. A changed or missing local root, symlink, unsafe path, or device mount identity causes sync to stop rather than infer deletions.
 
 If two devices upload from the same base revision, the server preserves the existing file and stores the later upload as `name (Conflict - Device - YYYY-MM-DD).ext`. It records `sync_conflict` in activity/history and the desktop client surfaces it in status. Cloud deletes go to the normal Cloud Trash, and connected mappings remove their corresponding local copy. Restores from Trash are journaled as `restore` and download normally.
 
-The web app's **Sync & Devices** view shows trusted devices, selected mappings, current status/errors, conflicts, and supports revocation. It intentionally does not try to remotely browse a device's local filesystem or turn private sync into MDM.
+The web app's **Folder sync** view gives new users a three-step walkthrough with a copyable setup command, then shows trusted devices, selected mappings, current status/errors, conflicts, and supports pausing or revocation. It intentionally does not try to remotely browse a device's local filesystem or turn private sync into MDM; local folder selection happens on the computer running the desktop client.
 
 See [SYNC_PROTOCOL.md](SYNC_PROTOCOL.md) for the stable protocol contract and client-author notes.
 
