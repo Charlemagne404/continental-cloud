@@ -9,7 +9,9 @@ import { FileService, mimeFromName } from './files.js';
 import { normalizeFileName, normalizeRelativePath, joinRelative } from './paths.js';
 
 export class UploadService {
-  constructor(private readonly files: FileService, private readonly maxUploadBytes: number, private readonly chunkBytes: number, private readonly versionRetention = 25) {}
+  private versionRetention: number;
+  constructor(private readonly files: FileService, private readonly maxUploadBytes: number, private readonly chunkBytes: number, versionRetention = 25) { this.versionRetention = versionRetention; }
+  setVersionRetention(retain: number): void { this.versionRetention = retain; }
 
   async start(input: { parentPath?: unknown; name?: unknown; size?: unknown; mimeType?: unknown; overwrite?: unknown; sync?: SyncUploadContext }): Promise<UploadSession> {
     const parentPath = normalizeRelativePath(input.parentPath ?? '');

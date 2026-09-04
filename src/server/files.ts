@@ -42,6 +42,15 @@ export class FileService {
     return this.db.listChildren(normalized, sort, direction);
   }
 
+  async listPage(relativePath: string, sort = 'name', direction = 'asc', limit = 100, offset = 0): Promise<{ items: FileNode[]; hasMore: boolean; offset: number; limit: number }> {
+    const normalized = normalizeRelativePath(relativePath);
+    const pageLimit = Number.isSafeInteger(limit) ? Math.min(250, Math.max(1, limit)) : 100;
+    const pageOffset = Number.isSafeInteger(offset) ? Math.max(0, offset) : 0;
+    await this.syncDirectory(normalized);
+    const page = this.db.listChildrenPage(normalized, sort, direction, pageLimit, pageOffset);
+    return { ...page, offset: pageOffset, limit: pageLimit };
+  }
+
   async getNode(id: string): Promise<FileNode> {
     const file = this.db.getNode(id);
     if (!file || file.trashedAt) throw fail.notFound();
@@ -208,6 +217,80 @@ export class FileService {
     const info = await lstat(await this.storage.pathFor(target)); const created = this.db.createNode(target, basename(target), false, info.size, item.mimeType);
     this.record('version_restored_as_copy', created.id, target, versionId, { operation: 'create', revision: created.revision, checksum: created.checksum });
     return created;
+  }
+
+  async resolveConflict(conflictId: string, originalPathInput: unknown, choiceInput: unknown): Promise<{ choice: 'keep-cloud' | 'keep-incoming' | 'keep-both' | 'dismiss'; path: string; node?: FileNode }> {
+    const conflict = await this.getNode(conflictId);
+    if (conflict.isDirectory) throw fail.badRequest('Folder conflicts must be resolved from the sync client.');
+    const originalPath = normalizeRelativePath(originalPathInput, { allowEmpty: false });
+    const choice = choiceInput;
+    if (choice !== 'keep-cloud' && choice !== 'keep-incoming' && choice !== 'keep-both' && choice !== 'dismiss') throw fail.badRequest('Unsupported conflict resolution.');
+    if (choice === 'keep-cloud') {
+      await this.trash(conflict.id);
+      this.db.addActivity('conflict_resolved', conflict.id, conflict.relativePath, 'choice=keep-cloud');
+      return { choice, path: conflict.relativePath };
+    }
+    if (choice === 'keep-incoming') {
+      const original = this.db.getActiveNodeByPath(originalPath);
+      if (!original) throw fail.conflict('The original cloud copy is no longer active; keep the incoming copy separately or resolve it from the drive.');
+      const version = await this.prepareOverwrite(originalPath, original);
+      try {
+        await rename(await this.storage.pathFor(conflict.relativePath), this.storage.pathForNew(originalPath));
+      } catch (error) {
+        await rename(version.versionPath, this.storage.pathForNew(originalPath)).catch(() => undefined);
+        this.db.deleteVersion(version.versionId);
+        throw error;
+      }
+      let updated = this.db.updateFileAfterUpload(original.id, conflict.size, conflict.mimeType);
+      if (conflict.checksum) updated = this.db.setChecksum(updated.id, conflict.checksum);
+      this.db.removeActivePathPrefix(conflict.relativePath);
+      this.db.addActivity('conflict_resolved', conflict.id, originalPath, 'choice=keep-incoming');
+      this.record('conflict_resolved', updated.id, updated.relativePath, 'choice=keep-incoming', { operation: 'modify', revision: updated.revision, checksum: updated.checksum });
+      return { choice, path: updated.relativePath, node: updated };
+    }
+    this.db.addActivity('conflict_resolved', conflict.id, conflict.relativePath, `choice=${choice}`);
+    return { choice, path: conflict.relativePath, node: conflict };
+  }
+
+  async verifyRecovery(): Promise<{ healthy: boolean; checkedFiles: number; checkedVersions: number; checkedTrash: number; missingFiles: number; missingVersions: number; missingTrash: number; mismatchedFiles: number; checkedAt: string; detail: string; issues: string[] }> {
+    await this.storage.requireReady();
+    const job = this.db.startJob('integrity_check');
+    const checkedAt = new Date().toISOString();
+    try {
+      let checkedFiles = 0; let checkedVersions = 0; let checkedTrash = 0; let missingFiles = 0; let missingVersions = 0; let missingTrash = 0; let mismatchedFiles = 0;
+      const issues: string[] = [];
+      for (const item of this.db.listActiveNodes()) {
+        try {
+          const info = await resolveExistingNoSymlink(this.storage.dataRoot, item.relativePath);
+          const disk = await lstat(info);
+          const validType = item.isDirectory ? disk.isDirectory() : disk.isFile();
+          if (!validType || (!item.isDirectory && disk.size !== item.size)) {
+            mismatchedFiles++;
+            if (issues.length < 20) issues.push(`${item.relativePath}: metadata does not match storage`);
+          }
+          checkedFiles++;
+        } catch {
+          missingFiles++;
+          if (issues.length < 20) issues.push(`${item.relativePath}: missing from storage`);
+        }
+      }
+      for (const version of this.db.listStoredVersions()) {
+        try { const info = await lstat(await this.storage.internalExisting(version.storedPath)); if (!info.isFile() || info.size !== version.size) { if (issues.length < 20) issues.push(`version ${version.id}: metadata does not match storage`); missingVersions++; } else checkedVersions++; }
+        catch { missingVersions++; if (issues.length < 20) issues.push(`version ${version.id}: missing from storage`); }
+      }
+      for (const item of this.db.listTrashRecords()) {
+        try { const info = await lstat(this.storage.trashPath(item.storageKey)); const expectedDirectory = item.node.isDirectory; if (expectedDirectory !== info.isDirectory()) { if (issues.length < 20) issues.push(`Trash ${item.originalPath}: metadata does not match storage`); missingTrash++; } else checkedTrash++; }
+        catch { missingTrash++; if (issues.length < 20) issues.push(`Trash ${item.originalPath}: missing from storage`); }
+      }
+      const healthy = missingFiles === 0 && missingVersions === 0 && missingTrash === 0 && mismatchedFiles === 0;
+      const detail = `Checked ${checkedFiles} active entries, ${checkedVersions} versions, and ${checkedTrash} Trash items${healthy ? '; no missing or mismatched data found.' : `; found ${missingFiles + missingVersions + missingTrash + mismatchedFiles} issue${missingFiles + missingVersions + missingTrash + mismatchedFiles === 1 ? '' : 's'}.`}`;
+      this.db.finishJob(job, healthy ? 'complete' : 'failed', detail);
+      this.db.addActivity('integrity_checked', null, null, detail);
+      return { healthy, checkedFiles, checkedVersions, checkedTrash, missingFiles, missingVersions, missingTrash, mismatchedFiles, checkedAt, detail, issues };
+    } catch (error) {
+      this.db.finishJob(job, 'failed', error instanceof Error ? error.message.slice(0, 500) : 'Integrity check failed.');
+      throw error;
+    }
   }
 
   async thumbnail(id: string): Promise<string | undefined> {

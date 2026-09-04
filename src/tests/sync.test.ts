@@ -113,6 +113,9 @@ test('two devices synchronize a selected folder and preserve simultaneous edits 
   const localNames = (await (await import('node:fs/promises')).readdir(linuxPath)).sort(); assert(localNames.some((name) => name.startsWith('essay (Conflict - ThinkPad - ')));
   const cloud = await request<{ items: Array<{ name: string }> }>(run, '/files?path=Projects'); assert(cloud.items.some((item) => item.name.startsWith('essay (Conflict - ThinkPad - ')));
   const activity = await request<Array<{ action: string }>>(run, '/activity'); assert(activity.some((item) => item.action === 'sync_conflict'));
+  const conflicts = await request<Array<{ node: { id: string }; cloud: { name: string } | null; originalPath: string }>>(run, '/sync/conflicts'); assert.equal(conflicts.length, 1); assert.equal(conflicts[0].cloud?.name, 'essay.txt');
+  const resolved = await json<{ choice: string }>(run, `/sync/conflicts/${conflicts[0].node.id}/resolve`, { originalPath: conflicts[0].originalPath, choice: 'keep-cloud' }); assert.equal(resolved.choice, 'keep-cloud');
+  assert.equal((await request<Array<unknown>>(run, '/sync/conflicts')).length, 0);
 });
 
 test('offline edits are queued durably, then delete through cloud Trash and propagate to another mapping', async () => {
@@ -164,8 +167,9 @@ test('sync API requires registered devices and never accepts traversal mapping p
 
 test('one-time pairing registers a device and consumes the code exactly once', async () => {
   const run = await boot(); await json(run, '/files/folder', { parentPath: '', name: 'Projects' });
-  const pairing = await json<{ id: string; code: string; cloudPath: string; policy: { preset: string }; expiresAt: string }>(run, '/sync/pairing', { cloudPath: 'Projects', policy: { preset: 'project' } });
+  const pairing = await json<{ id: string; code: string; cloudPath: string; policy: { preset: string }; expiresAt: string; qr: string }>(run, '/sync/pairing', { cloudPath: 'Projects', policy: { preset: 'project' } });
   assert.match(pairing.code, /^[A-F0-9]{6}(?:-[A-F0-9]{6}){5}$/);
+  assert.match(pairing.qr, /^<svg/);
   const deviceId = randomUUID(); const localPath = join(run.root, 'paired-device'); await mkdir(localPath);
   const claimResponse = await fetch(`${run.base}/api/sync/pairing/claim`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: pairing.code, deviceId, name: 'Paired device', platform: 'test', clientVersion: 'test', localPath }) });
   const claimBody = await claimResponse.json() as any; assert.equal(claimResponse.ok, true, claimBody?.error?.message);

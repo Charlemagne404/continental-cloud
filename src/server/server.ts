@@ -12,6 +12,7 @@ import { UploadService } from './uploads.js';
 import { streamTar } from './archive.js';
 import { SyncNotifier, SyncService } from './sync.js';
 import { isSyncInstallerPlatform, renderSyncInstaller } from './installers.js';
+import { toString as qrToString } from 'qrcode';
 
 type Services = { db: MetadataDatabase; files: FileService; uploads: UploadService; sync: SyncService; notifier: SyncNotifier };
 const JSON_LIMIT = 1_048_576;
@@ -26,6 +27,9 @@ export function createCloudServer(config: CloudConfig) {
     if (!services) {
       const db = new MetadataDatabase(metadataPath(config.storagePath));
       await db.open();
+      const runtime = db.getRuntimeSettings({ versionRetention: config.versionRetention, trashRetentionDays: config.trashRetentionDays });
+      config.versionRetention = runtime.versionRetention;
+      config.trashRetentionDays = runtime.trashRetentionDays;
       const notifier = new SyncNotifier();
       services = { db, files: new FileService(storage, db), uploads: undefined as never, sync: undefined as never, notifier };
       services.uploads = new UploadService(services.files, config.maxUploadBytes, config.uploadChunkBytes, config.versionRetention);
@@ -52,6 +56,11 @@ export function createCloudServer(config: CloudConfig) {
           // stream without ever putting the long-lived token in a URL.
           response.setHeader('Set-Cookie', `cc_session=${encodeURIComponent(config.authToken!)}; Path=/; HttpOnly; SameSite=Strict${config.environment === 'production' ? '; Secure' : ''}`);
           sendJson(response, 200, { data: { established: true } });
+          return;
+        }
+        if (request.method === 'DELETE' && url.pathname === '/api/session') {
+          response.setHeader('Set-Cookie', 'cc_session=; Path=/; HttpOnly; Max-Age=0; SameSite=Strict');
+          sendJson(response, 200, { data: { ended: true } });
           return;
         }
         if (request.method === 'GET' && url.pathname === '/api/health') {
@@ -98,7 +107,10 @@ export function createCloudServer(config: CloudConfig) {
 async function handleApi(request: IncomingMessage, response: ServerResponse, url: URL, services: Services, storage: Storage, config: CloudConfig): Promise<void> {
   const { pathname } = url; const method = request.method!;
   if (method === 'POST' && pathname === '/api/sync/pairing') {
-    sendJson(response, 201, { data: services.sync.createPairing(await readJson(request)) }); return;
+    const pairing = services.sync.createPairing(await readJson(request));
+    const serverUrl = config.allowedOrigin ?? publicOrigin(request);
+    const qr = await qrToString(JSON.stringify({ type: 'continental-cloud-sync', serverUrl, code: pairing.code, cloudPath: pairing.cloudPath, policy: pairing.policy }), { type: 'svg', errorCorrectionLevel: 'M', margin: 1, width: 240 });
+    sendJson(response, 201, { data: { ...pairing, qr } }); return;
   }
   if (method === 'POST' && pathname === '/api/sync/installer') {
     const body = await readJson(request);
@@ -127,6 +139,9 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
   if (consoleMappings && method === 'POST') { sendJson(response, 201, { data: services.sync.mappingForDevice(consoleMappings[1], await readJson(request)) }); return; }
   const consoleMapping = pathname.match(/^\/api\/sync\/devices\/([0-9a-f-]{36})\/mappings\/([0-9a-f-]{36})$/i);
   if (consoleMapping && method === 'PATCH') { sendJson(response, 200, { data: services.sync.setMappingFromConsole(consoleMapping[1], consoleMapping[2], await readJson(request)) }); return; }
+  const conflictResolution = pathname.match(/^\/api\/sync\/conflicts\/([0-9a-f-]{36})\/resolve$/i);
+  if (method === 'POST' && conflictResolution) { const body = await readJson(request); sendJson(response, 200, { data: await services.files.resolveConflict(conflictResolution[1], body.originalPath, body.choice) }); return; }
+  if (method === 'GET' && pathname === '/api/sync/conflicts') { sendJson(response, 200, { data: services.sync.conflicts() }); return; }
   if (pathname.startsWith('/api/sync/')) {
     const deviceId = requiredSyncDevice(request);
     if (method === 'GET' && pathname === '/api/sync/state') { sendJson(response, 200, { data: services.sync.state(deviceId) }); return; }
@@ -158,15 +173,19 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
   if (method === 'POST' && pathname === '/api/storage/reconcile') {
     sendJson(response, 200, { data: await services.files.reconcile() }); return;
   }
+  if (method === 'POST' && pathname === '/api/operations/recovery-check') {
+    sendJson(response, 200, { data: await services.files.verifyRecovery() }); return;
+  }
   if (method === 'GET' && pathname === '/api/operations') {
     const storageStatus = await storage.refresh(); const usedBytes = services.db.usage();
+    const runtime = services.db.getRuntimeSettings({ versionRetention: config.versionRetention, trashRetentionDays: config.trashRetentionDays });
     sendJson(response, 200, { data: {
       storage: { ...storageStatus, usedBytes, breakdown: services.db.storageBreakdown(), history: services.db.healthHistory() },
       jobs: services.db.listJobs(50), failedJobs: services.db.listJobs(100).filter((job) => job.state === 'failed'),
       uploads: services.db.staleUploads(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()),
       usage: { folders: services.db.usageByFolder(), types: services.db.usageByType() },
-      retention: { versionRetention: config.versionRetention, trashRetentionDays: config.trashRetentionDays, trashItems: services.db.listTrash().length, expiringTrash: services.db.expiredTrash(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()).length },
-      lastVerifiedRestore: services.db.listActivity(200).find((event) => event.action === 'version_restored' || event.action === 'restored') ?? null,
+      retention: { versionRetention: runtime.versionRetention, trashRetentionDays: runtime.trashRetentionDays, trashItems: services.db.listTrash().length, expiringTrash: services.db.expiredTrash(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()).length },
+      lastIntegrityCheck: services.db.listActivity(200).find((event) => event.action === 'integrity_checked') ?? null,
     } }); return;
   }
   if (method === 'POST' && pathname === '/api/operations/cleanup') {
@@ -175,14 +194,24 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
     sendJson(response, 200, { data: { removedUploads, removedTrash } }); return;
   }
   if (method === 'PATCH' && pathname === '/api/operations/retention') {
-    const body = await readJson(request); if (typeof body.versionRetention === 'number' && Number.isInteger(body.versionRetention) && body.versionRetention >= 1 && body.versionRetention <= 1000) config.versionRetention = body.versionRetention;
-    if (typeof body.trashRetentionDays === 'number' && Number.isInteger(body.trashRetentionDays) && body.trashRetentionDays >= 1 && body.trashRetentionDays <= 3650) config.trashRetentionDays = body.trashRetentionDays;
-    sendJson(response, 200, { data: { versionRetention: config.versionRetention, trashRetentionDays: config.trashRetentionDays } }); return;
+    const body = await readJson(request);
+    const current = services.db.getRuntimeSettings({ versionRetention: config.versionRetention, trashRetentionDays: config.trashRetentionDays });
+    const next = {
+      versionRetention: typeof body.versionRetention === 'number' && Number.isInteger(body.versionRetention) && body.versionRetention >= 1 && body.versionRetention <= 1000 ? body.versionRetention : current.versionRetention,
+      trashRetentionDays: typeof body.trashRetentionDays === 'number' && Number.isInteger(body.trashRetentionDays) && body.trashRetentionDays >= 1 && body.trashRetentionDays <= 3650 ? body.trashRetentionDays : current.trashRetentionDays,
+    };
+    services.db.setRuntimeSettings(next);
+    config.versionRetention = next.versionRetention;
+    config.trashRetentionDays = next.trashRetentionDays;
+    services.uploads.setVersionRetention(next.versionRetention);
+    sendJson(response, 200, { data: next }); return;
   }
   if (method === 'GET' && pathname === '/api/files') {
     const path = url.searchParams.get('path') ?? '';
     const sort = url.searchParams.get('sort') ?? 'name'; const direction = url.searchParams.get('direction') ?? 'asc';
-    sendJson(response, 200, { data: { path, items: await services.files.list(path, sort, direction) } }); return;
+    const number = (name: string, fallback: number): number => { const value = url.searchParams.get(name); const parsed = value !== null && /^\d+$/.test(value) ? Number(value) : NaN; return Number.isSafeInteger(parsed) ? parsed : fallback; };
+    const page = await services.files.listPage(path, sort, direction, Math.min(250, Math.max(1, number('limit', 100))), number('offset', 0));
+    sendJson(response, 200, { data: { path, ...page, nextOffset: page.hasMore ? page.offset + page.items.length : null } }); return;
   }
   if (method === 'POST' && pathname === '/api/files/folder') {
     const body = await readJson(request); const folder = await services.files.createFolder(body.parentPath ?? '', body.name);
@@ -191,9 +220,9 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
   if (method === 'GET' && pathname === '/api/recent') { sendJson(response, 200, { data: services.db.listRecent() }); return; }
   if (method === 'GET' && pathname === '/api/favorites') { sendJson(response, 200, { data: services.db.listFavorites() }); return; }
   if (method === 'GET' && pathname === '/api/search') {
-    const number = (name: string): number | undefined => { const value = url.searchParams.get(name); return value !== null && /^\d+$/.test(value) ? Number(value) : undefined; };
+    const number = (name: string): number | undefined => { const value = url.searchParams.get(name); const parsed = value !== null && /^\d+$/.test(value) ? Number(value) : NaN; return Number.isSafeInteger(parsed) ? parsed : undefined; };
     const boolean = (name: string): boolean | undefined => url.searchParams.get(name) === 'true' ? true : url.searchParams.get(name) === 'false' ? false : undefined;
-    sendJson(response, 200, { data: services.db.search(url.searchParams.get('q') ?? '', Math.min(250, number('limit') ?? 100), { extension: url.searchParams.get('extension') ?? undefined, type: url.searchParams.get('type') ?? undefined, favorite: boolean('favorite'), trashed: boolean('trash'), minSize: number('minSize'), maxSize: number('maxSize'), before: url.searchParams.get('before') ?? undefined, after: url.searchParams.get('after') ?? undefined, path: url.searchParams.get('path') ?? undefined }) }); return;
+    sendJson(response, 200, { data: services.db.search(url.searchParams.get('q') ?? '', Math.min(250, number('limit') ?? 100), { extension: url.searchParams.get('extension') ?? undefined, type: url.searchParams.get('type') ?? undefined, tag: url.searchParams.get('tag') ?? undefined, favorite: boolean('favorite'), trashed: boolean('trash'), minSize: number('minSize'), maxSize: number('maxSize'), before: url.searchParams.get('before') ?? undefined, after: url.searchParams.get('after') ?? undefined, path: url.searchParams.get('path') ?? undefined }) }); return;
   }
   if (method === 'GET' && pathname === '/api/search/suggestions') { sendJson(response, 200, { data: services.db.searchSuggestions((url.searchParams.get('q') ?? '').slice(0, 80)) }); return; }
   if (method === 'GET' && pathname === '/api/duplicates') { sendJson(response, 200, { data: services.db.duplicateGroups() }); return; }
@@ -232,7 +261,7 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
   const versionContent = pathname.match(/^\/api\/versions\/([0-9a-f-]{36})\/content$/i);
   if (method === 'GET' && versionContent) {
     const version = services.db.getVersion(versionContent[1]); if (!version) throw fail.notFound('Version not found.');
-    await sendDiskFile(request, response, await storage.internalExisting(version.storedPath), false, undefined); return;
+    await sendDiskFile(request, response, await storage.internalExisting(version.storedPath), false, version.mimeType ?? undefined, version.originalName); return;
   }
   const fileThumbnail = pathname.match(/^\/api\/files\/([0-9a-f-]{36})\/thumbnail$/i);
   if (method === 'GET' && fileThumbnail) {

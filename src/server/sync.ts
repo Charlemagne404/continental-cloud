@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import type { ChangeEvent, FileNode, SyncDevice, SyncMapping, SyncOperation, SyncPairing, SyncPairingClaim, SyncPolicy, SyncProgress, UploadSession } from '../shared/types.js';
+import type { ActivityEvent, ChangeEvent, FileNode, SyncDevice, SyncMapping, SyncOperation, SyncPairing, SyncPairingClaim, SyncPolicy, SyncProgress, UploadSession } from '../shared/types.js';
 import { fail } from './errors.js';
 import { FileService } from './files.js';
 import { MetadataDatabase } from './metadata.js';
@@ -35,6 +35,15 @@ export class SyncService {
 
   devices(): Array<SyncDevice & { mappings: SyncMapping[] }> {
     return this.db.listSyncDevices().map((device) => ({ ...device, mappings: this.db.listSyncMappings(device.id) }));
+  }
+  conflicts(): Array<ActivityEvent & { originalPath: string; node: FileNode }> {
+    const events = this.db.listActivity(500);
+    const resolved = new Set(events.filter((event) => event.action === 'conflict_resolved' && event.nodeId).map((event) => event.nodeId!));
+    return events.filter((event) => event.action === 'sync_conflict' && event.nodeId && !resolved.has(event.nodeId)).flatMap((event) => {
+      const node = this.db.getNode(event.nodeId!);
+      const originalPath = event.detail?.startsWith('conflict_copy_of=') ? event.detail.slice('conflict_copy_of='.length) : '';
+      return node && !node.trashedAt && originalPath ? [{ ...event, originalPath, node, cloud: this.db.getActiveNodeByPath(originalPath) ?? null }] : [];
+    });
   }
   mappingForDevice(deviceId: string, input: { id?: unknown; cloudPath?: unknown; localPath?: unknown; paused?: unknown; policy?: unknown }): SyncMapping { return this.mapping(deviceId, input); }
   setMappingFromConsole(deviceId: string, mappingId: string, input: { paused?: unknown; status?: unknown }): SyncMapping { return this.setMappingStatus(deviceId, mappingId, input); }

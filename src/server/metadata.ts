@@ -86,6 +86,7 @@ export class MetadataDatabase {
       CREATE TABLE IF NOT EXISTS saved_searches (id TEXT PRIMARY KEY, name TEXT NOT NULL, query TEXT NOT NULL, filters TEXT NOT NULL, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS health_history (id TEXT PRIMARY KEY, state TEXT NOT NULL, free_bytes INTEGER, total_bytes INTEGER, used_bytes INTEGER, checked_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS health_history_checked ON health_history(checked_at DESC);
+      CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(node_id UNINDEXED, name, relative_path);
     `);
     // The application predates schema migrations. These additive upgrades keep an
@@ -106,6 +107,17 @@ export class MetadataDatabase {
 
   close(): void { this.db?.close(); }
   health(): { ok: boolean } { this.db.prepare('SELECT 1').get(); return { ok: true }; }
+  getRuntimeSettings(defaults: { versionRetention: number; trashRetentionDays: number }): { versionRetention: number; trashRetentionDays: number } {
+    const values = new Map((this.db.prepare('SELECT key,value FROM app_settings WHERE key IN (?,?)').all('versionRetention', 'trashRetentionDays') as Array<{ key: string; value: string }>).map((row) => [row.key, Number(row.value)]));
+    const positiveInteger = (value: number | undefined, fallback: number): number => Number.isInteger(value) && value! >= 1 ? value! : fallback;
+    return { versionRetention: positiveInteger(values.get('versionRetention'), defaults.versionRetention), trashRetentionDays: positiveInteger(values.get('trashRetentionDays'), defaults.trashRetentionDays) };
+  }
+  setRuntimeSettings(values: { versionRetention: number; trashRetentionDays: number }): void {
+    const statement = this.db.prepare('INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at');
+    const timestamp = now();
+    statement.run('versionRetention', String(values.versionRetention), timestamp);
+    statement.run('trashRetentionDays', String(values.trashRetentionDays), timestamp);
+  }
 
   upsertDiskEntry(entry: DiskEntry, mimeType: string | null = null): FileNode {
     const existing = this.db.prepare('SELECT * FROM nodes WHERE relative_path = ?').get(entry.relativePath) as NodeRow | undefined;
@@ -143,8 +155,15 @@ export class MetadataDatabase {
   listChildren(parent: string, sort: string = 'name', direction: string = 'asc'): FileNode[] {
     const order = sort === 'modified' ? 'modified_at' : sort === 'size' ? 'size' : 'name COLLATE NOCASE';
     const dir = direction === 'desc' ? 'DESC' : 'ASC';
-    return (this.db.prepare(`SELECT * FROM nodes WHERE parent_path=? AND trashed_at IS NULL ORDER BY is_directory DESC, ${order} ${dir}`).all(parent) as NodeRow[]).map(node);
+    return (this.db.prepare(`SELECT * FROM nodes WHERE parent_path=? AND trashed_at IS NULL ORDER BY is_directory DESC, ${order} ${dir}, id ${dir}`).all(parent) as NodeRow[]).map(node);
   }
+  listChildrenPage(parent: string, sort = 'name', direction = 'asc', limit = 100, offset = 0): { items: FileNode[]; hasMore: boolean } {
+    const order = sort === 'modified' ? 'modified_at' : sort === 'size' ? 'size' : 'name COLLATE NOCASE';
+    const dir = direction === 'desc' ? 'DESC' : 'ASC';
+    const rows = this.db.prepare(`SELECT * FROM nodes WHERE parent_path=? AND trashed_at IS NULL ORDER BY is_directory DESC, ${order} ${dir}, id ${dir} LIMIT ? OFFSET ?`).all(parent, limit + 1, offset) as NodeRow[];
+    return { items: rows.slice(0, limit).map(node), hasMore: rows.length > limit };
+  }
+  listActiveNodes(): FileNode[] { return (this.db.prepare('SELECT * FROM nodes WHERE trashed_at IS NULL ORDER BY relative_path').all() as NodeRow[]).map(node); }
   listRecent(limit = 60): FileNode[] {
     return (this.db.prepare('SELECT * FROM nodes WHERE trashed_at IS NULL AND is_directory=0 ORDER BY modified_at DESC LIMIT ?').all(limit) as NodeRow[]).map(node);
   }
@@ -178,7 +197,7 @@ export class MetadataDatabase {
   usageByType(): Array<{ type: string; bytes: number; files: number }> { return this.db.prepare("SELECT COALESCE(NULLIF(substr(mime_type,1,instr(mime_type,'/')-1),''),'other') as type,COALESCE(SUM(size),0) as bytes,COUNT(*) as files FROM nodes WHERE trashed_at IS NULL AND is_directory=0 GROUP BY type ORDER BY bytes DESC LIMIT 20").all().map((row: any) => ({ type: row.type, bytes: Number(row.bytes), files: Number(row.files) })); }
   recordHealth(input: { state: string; freeBytes?: number; totalBytes?: number; usedBytes?: number | null }): void { this.db.prepare('INSERT INTO health_history(id,state,free_bytes,total_bytes,used_bytes,checked_at) VALUES(?,?,?,?,?,?)').run(randomUUID(), input.state, input.freeBytes ?? null, input.totalBytes ?? null, input.usedBytes ?? null, now()); this.db.prepare('DELETE FROM health_history WHERE id NOT IN (SELECT id FROM health_history ORDER BY checked_at DESC LIMIT 180)').run(); }
   healthHistory(): Array<{ state: string; freeBytes: number | null; totalBytes: number | null; usedBytes: number | null; checkedAt: string }> { return this.db.prepare('SELECT state,free_bytes,total_bytes,used_bytes,checked_at FROM health_history ORDER BY checked_at DESC LIMIT 60').all().map((row: any) => ({ state: row.state, freeBytes: row.free_bytes, totalBytes: row.total_bytes, usedBytes: row.used_bytes, checkedAt: row.checked_at })); }
-  search(query: string, limit = 100, filters: { extension?: string; type?: string; favorite?: boolean; trashed?: boolean; minSize?: number; maxSize?: number; before?: string; after?: string; path?: string } = {}): FileNode[] {
+  search(query: string, limit = 100, filters: { extension?: string; type?: string; tag?: string; favorite?: boolean; trashed?: boolean; minSize?: number; maxSize?: number; before?: string; after?: string; path?: string } = {}): FileNode[] {
     const terms = query.match(/[\p{L}\p{N}_]+/gu)?.slice(0, 12) ?? [];
     const where = this.searchWhere(filters);
     if (!terms.length) return (this.db.prepare(`SELECT * FROM nodes WHERE ${where.sql} ORDER BY modified_at DESC LIMIT ?`).all(...where.params, limit) as NodeRow[]).map(node);
@@ -235,6 +254,10 @@ export class MetadataDatabase {
     const rows = this.db.prepare(`SELECT t.id as trash_id,t.original_path,t.deleted_at,n.* FROM trash_items t JOIN nodes n ON n.id=t.node_id ORDER BY t.deleted_at DESC`).all() as Array<NodeRow & { trash_id: string; original_path: string; deleted_at: string }>;
     return rows.map((row) => ({ id: row.trash_id, originalPath: row.original_path, deletedAt: row.deleted_at, node: node(row) }));
   }
+  listTrashRecords(): Array<{ id: string; storageKey: string; originalPath: string; deletedAt: string; node: FileNode }> {
+    const rows = this.db.prepare(`SELECT t.id as trash_id,t.storage_key,t.original_path,t.deleted_at,n.* FROM trash_items t JOIN nodes n ON n.id=t.node_id ORDER BY t.deleted_at DESC`).all() as Array<NodeRow & { trash_id: string; storage_key: string; original_path: string; deleted_at: string }>;
+    return rows.map((row) => ({ id: row.trash_id, storageKey: row.storage_key, originalPath: row.original_path, deletedAt: row.deleted_at, node: node(row) }));
+  }
   expiredTrash(before: string): Array<{ id: string }> { return this.db.prepare('SELECT id FROM trash_items WHERE deleted_at < ? ORDER BY deleted_at ASC').all(before).map((row: any) => ({ id: row.id })); }
   getTrash(id: string): { id: string; storageKey: string; originalPath: string; node: FileNode } | undefined {
     const row = this.db.prepare(`SELECT t.id as trash_id,t.storage_key,t.original_path,n.* FROM trash_items t JOIN nodes n ON n.id=t.node_id WHERE t.id=?`).get(id) as (NodeRow & { trash_id: string; storage_key: string; original_path: string }) | undefined;
@@ -270,13 +293,16 @@ export class MetadataDatabase {
     return this.db.prepare('SELECT id,stored_path,original_name,mime_type,size,created_at FROM versions WHERE node_id=? ORDER BY created_at DESC').all(nodeId)
       .map((row: any) => ({ id: row.id, storedPath: row.stored_path, originalName: row.original_name, mimeType: row.mime_type, size: row.size, createdAt: row.created_at }));
   }
+  listStoredVersions(): Array<{ id: string; nodeId: string; storedPath: string; size: number }> {
+    return this.db.prepare('SELECT id,node_id,stored_path,size FROM versions ORDER BY created_at DESC').all().map((row: any) => ({ id: row.id, nodeId: row.node_id, storedPath: row.stored_path, size: Number(row.size) }));
+  }
   versionsBeyondRetention(nodeId: string, retain: number): Array<{ id: string; storedPath: string }> {
     return this.db.prepare('SELECT id,stored_path FROM versions WHERE node_id=? ORDER BY created_at DESC LIMIT -1 OFFSET ?').all(nodeId, retain)
       .map((row: any) => ({ id: row.id, storedPath: row.stored_path }));
   }
-  getVersion(versionId: string): { id: string; nodeId: string; storedPath: string } | undefined {
-    const row = this.db.prepare('SELECT id,node_id,stored_path FROM versions WHERE id=?').get(versionId) as { id: string; node_id: string; stored_path: string } | undefined;
-    return row ? { id: row.id, nodeId: row.node_id, storedPath: row.stored_path } : undefined;
+  getVersion(versionId: string): { id: string; nodeId: string; storedPath: string; originalName: string; mimeType: string | null; size: number; createdAt: string } | undefined {
+    const row = this.db.prepare('SELECT id,node_id,stored_path,original_name,mime_type,size,created_at FROM versions WHERE id=?').get(versionId) as { id: string; node_id: string; stored_path: string; original_name: string; mime_type: string | null; size: number; created_at: string } | undefined;
+    return row ? { id: row.id, nodeId: row.node_id, storedPath: row.stored_path, originalName: row.original_name, mimeType: row.mime_type, size: Number(row.size), createdAt: row.created_at } : undefined;
   }
   createUpload(session: UploadSession, tempName: string): void {
     this.db.prepare(`INSERT INTO upload_sessions (id,parent_path,name,mime_type,size,chunk_size,chunk_count,received_chunks,status,created_at,temp_name,sync_context,result_node_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
@@ -410,10 +436,11 @@ export class MetadataDatabase {
     this.db.prepare('INSERT INTO files_fts (node_id,name,relative_path) VALUES (?,?,?)').run(id, name, path);
   }
   private total(table: 'nodes' | 'versions', where: string): number { return Number((this.db.prepare(`SELECT COALESCE(SUM(size),0) as total FROM ${table} WHERE ${where}`).get() as { total: number }).total); }
-  private searchWhere(filters: { extension?: string; type?: string; favorite?: boolean; trashed?: boolean; minSize?: number; maxSize?: number; before?: string; after?: string; path?: string }): { sql: string; params: Array<string | number> } {
+  private searchWhere(filters: { extension?: string; type?: string; tag?: string; favorite?: boolean; trashed?: boolean; minSize?: number; maxSize?: number; before?: string; after?: string; path?: string }): { sql: string; params: Array<string | number> } {
     const clauses: string[] = [filters.trashed ? 'trashed_at IS NOT NULL' : 'trashed_at IS NULL']; const params: Array<string | number> = [];
     if (filters.extension) { clauses.push('name LIKE ?'); params.push(`%.${filters.extension.replace(/^\./, '').replace(/[%_]/g, '\\$&')}`); }
     if (filters.type) { clauses.push('mime_type LIKE ?'); params.push(`${filters.type.replace(/[%_]/g, '\\$&')}%`); }
+    if (filters.tag) { clauses.push('EXISTS (SELECT 1 FROM node_tags nt JOIN tags t ON t.id=nt.tag_id WHERE nt.node_id=nodes.id AND t.name=? COLLATE NOCASE)'); params.push(filters.tag.slice(0, 48)); }
     if (filters.favorite !== undefined) { clauses.push('favorite=?'); params.push(Number(filters.favorite)); }
     if (filters.minSize !== undefined) { clauses.push('size>=?'); params.push(filters.minSize); }
     if (filters.maxSize !== undefined) { clauses.push('size<=?'); params.push(filters.maxSize); }
