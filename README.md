@@ -110,7 +110,7 @@ Use Caddy or `tailscale serve` to make the loopback service available exclusivel
 
 ## API outline
 
-All `/api/*` requests require `X-Continental-Token` or the browser session established at `POST /api/session`.
+All `/api/*` requests require `X-Continental-Token` or the browser session established at `POST /api/session`, except `POST /api/sync/pairing/claim`, which is intentionally protected by its high-entropy, expiring, single-use pairing code. Paired clients receive a device-scoped token that can only use the sync API.
 
 ```text
 GET    /api/files?path=&sort=&direction=
@@ -131,7 +131,8 @@ GET    /api/search?q=
 GET    /api/changes?after=&limit=         # monotonic change journal for sync clients
 POST   /api/sync/pairing                  # create a short-lived device pairing code
 GET    /api/sync/pairing/:id              # inspect pending/claimed/expired pairing status
-POST   /api/sync/pairing/claim            # claim a code with a device token and local folder
+POST   /api/sync/pairing/claim            # claim a one-time code and local folder; no main token needed
+POST   /api/sync/installer                # download a server-generated platform setup file
 POST   /api/sync/devices                  # register a trusted desktop device
 GET    /api/sync/devices                  # device and selected-folder status
 DELETE /api/sync/devices/:id              # revoke a device
@@ -165,15 +166,22 @@ Continental ID, multi-user authorization, sharing/public links, advanced media t
 
 The desktop client is a small native Node daemon for Windows, macOS, and Linux. It uses recursive `fs.watch` on Windows and macOS, watches each directory on Linux, listens to advisory server-sent change notifications, and falls back to a conservative ten-minute reconciliation. It does **not** poll and rescan the whole tree every few seconds. If a native recursive watcher is unavailable, it falls back to per-directory watchers and keeps the mapping safe.
 
-From a folder's details panel, choose **Set up sync**. Select **Coding projects** to omit common dependencies and generated trees (`node_modules`, virtual environments, build output, caches, and temporary files), or choose **Exact mirror** to include every safe file. The web app shows a one-time pairing code; it does not attempt to select or read a folder on another device.
+From a folder's details panel, choose **Set up sync**. Select **Coding projects** to omit common dependencies and generated trees (`node_modules`, virtual environments, build output, caches, and temporary files), or choose **Exact mirror** to include every safe file. The recommended path is now entirely server-led:
 
-Install/build Continental Cloud normally, then on each device:
+1. Choose the target computer's platform in the sync dialog.
+2. Download the generated installer and move it to that computer however is convenient (AirDrop, USB, email to yourself, or a normal browser download there).
+3. Open it once. Windows runs a `.cmd` setup file; macOS downloads a zip containing an executable `.command` setup file; Linux runs a shell setup file.
+4. Accept the suggested local folder or type another one. The standalone client pairs itself, performs the first sync, and installs per-user automatic start.
+
+The target computer does not need this repository, Node.js, npm, the main cloud token, or a build step. The Docker build creates x64 and ARM64 client binaries for Windows, macOS, and Linux on the server. The generated installer is short-lived and contains only the one-time pairing code, never the main cloud token.
+
+The terminal wizard remains available when needed:
 
 ```bash
 cloud-sync setup --server https://cloud.your-tailnet.ts.net
 ```
 
-The setup wizard asks for the access token, gives the device a friendly name, creates `~/Continental Cloud` when needed, and asks which cloud folder to sync. It runs the first sync and offers to keep live sync running, so most devices need only this one command. If the command is run without arguments in a terminal, it opens the same wizard. Run `cloud-sync setup` again later to add another folder to an already connected device.
+The setup wizard asks for the access token, gives the device a friendly name, creates `~/Continental Cloud` when needed, and asks which cloud folder to sync. It runs the first sync and offers to keep live sync running. Run `cloud-sync setup` again later to add another folder to an already connected device.
 
 For scripts or fully specified setups, the lower-level commands remain available:
 
@@ -183,11 +191,11 @@ cloud-sync map add --cloud /Projects/Meridian --local "$HOME/Continental Cloud/M
 cloud-sync install       # start automatically at user login
 ```
 
-For the web pairing flow, run the command shown by **Set up sync** on the target device:
+For a manual pairing flow, run this on the target device. The pairing code is a one-time capability, so the main cloud token is not required:
 
 ```bash
 cloud-sync pair --server https://cloud.your-tailnet.ts.net \
-  --token 'your-cloud-token' --code 'ABC123-DEF456-GHI789-JKL012-MNO345-PQR678' \
+  --code 'ABC123-DEF456-GHI789-JKL012-MNO345-PQR678' \
   --local "$HOME/Continental Cloud/Meridian" --name 'MacBook'
 cloud-sync install
 ```
@@ -207,7 +215,7 @@ Mappings are selective and names need not match: cloud `/Projects/Meridian` can 
 
 If two devices upload from the same base revision, the server preserves the existing file and stores the later upload as `name (Conflict - Device - YYYY-MM-DD).ext`. It records `sync_conflict` in activity/history and the desktop client surfaces it in status. Cloud deletes go to the normal Cloud Trash, and connected mappings remove their corresponding local copy. Restores from Trash are journaled as `restore` and download normally.
 
-The web app's **Folder sync** view gives new users a three-step walkthrough with a copyable setup command, then shows trusted devices, selected mappings, current status/errors, conflicts, and supports pausing or revocation. It intentionally does not try to remotely browse a device's local filesystem or turn private sync into MDM; local folder selection happens on the computer running the desktop client.
+The web app's **Folder sync** view leads with platform downloads, explains exactly what happens on the target computer, and keeps the copyable terminal command as a fallback. It then shows trusted devices, selected mappings, current status/errors, conflicts, and supports pausing or revocation. It intentionally does not try to remotely browse a device's local filesystem or turn private sync into MDM; local folder selection happens on the computer running the desktop client.
 
 See [SYNC_PROTOCOL.md](SYNC_PROTOCOL.md) for the stable protocol contract and client-author notes.
 

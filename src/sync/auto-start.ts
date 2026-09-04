@@ -34,7 +34,7 @@ export interface AutoStartOptions {
   environment?: NodeJS.ProcessEnv;
   userHome?: string;
   configFile?: string;
-  scriptFile?: string;
+  scriptFile?: string | null;
   executable?: string;
   runCommand?: CommandRunner;
 }
@@ -64,7 +64,7 @@ export async function installSyncAutoStart(options: AutoStartOptions = {}): Prom
     if (isMissingFile(error)) throw new Error(`Sync is not initialized at ${paths.configFile}. Run cloud-sync init or cloud-sync pair first.`);
     throw error;
   });
-  const scriptFile = resolve(options.scriptFile ?? process.argv[1] ?? 'dist/sync-cli.js');
+  const scriptFile = options.scriptFile === undefined ? resolve(process.argv[1] ?? 'dist/sync-cli.js') : options.scriptFile ? resolve(options.scriptFile) : undefined;
   const executable = options.executable ?? process.execPath;
   const run = options.runCommand ?? runCommand;
   await mkdir(paths.logDirectory, { recursive: true, mode: 0o700 });
@@ -124,8 +124,8 @@ export async function uninstallSyncAutoStart(options: AutoStartOptions = {}): Pr
   return { platform: paths.platform, installedPath: paths.installedPath, activated: false, detail };
 }
 
-export function renderLaunchAgent(input: { executable: string; scriptFile: string; configFile: string; logDirectory: string }): string {
-  const argumentsXml = [input.executable, input.scriptFile, 'start', '--config', input.configFile].map((value) => `    <string>${xml(value)}</string>`).join('\n');
+export function renderLaunchAgent(input: { executable: string; scriptFile?: string; configFile: string; logDirectory: string }): string {
+  const argumentsXml = [input.executable, ...(input.scriptFile ? [input.scriptFile] : []), 'start', '--config', input.configFile].map((value) => `    <string>${xml(value)}</string>`).join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -146,14 +146,14 @@ ${argumentsXml}
 `;
 }
 
-export function renderSystemdUnit(input: { executable: string; scriptFile: string; configFile: string }): string {
+export function renderSystemdUnit(input: { executable: string; scriptFile?: string; configFile: string }): string {
   return `[Unit]
 Description=Continental Cloud Sync
 Wants=network-online.target
 After=network-online.target
 
 [Service]
-ExecStart=${systemdArgument(input.executable)} ${systemdArgument(input.scriptFile)} start --config ${systemdArgument(input.configFile)}
+ExecStart=${systemdArgument(input.executable)}${input.scriptFile ? ` ${systemdArgument(input.scriptFile)}` : ''} start --config ${systemdArgument(input.configFile)}
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
@@ -164,8 +164,8 @@ WantedBy=default.target
 `;
 }
 
-export function renderWindowsLauncher(input: { executable: string; scriptFile: string; configFile: string }): string {
-  return `@echo off\r\n${windowsArgument(input.executable)} ${windowsArgument(input.scriptFile)} start --config ${windowsArgument(input.configFile)}\r\n`;
+export function renderWindowsLauncher(input: { executable: string; scriptFile?: string; configFile: string }): string {
+  return `@echo off\r\n${windowsArgument(input.executable)}${input.scriptFile ? ` ${windowsArgument(input.scriptFile)}` : ''} start --config ${windowsArgument(input.configFile)}\r\n`;
 }
 
 function isSupportedPlatform(platform: NodeJS.Platform): platform is SupportedPlatform { return platform === 'darwin' || platform === 'linux' || platform === 'win32'; }

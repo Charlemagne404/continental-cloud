@@ -6,7 +6,7 @@ COPY tsconfig.json ./
 COPY scripts ./scripts
 COPY public ./public
 COPY src ./src
-RUN npm run build && npm prune --omit=dev
+RUN npm run build && node scripts/package-sync.mjs && npm prune --omit=dev
 
 FROM node:24-bookworm-slim
 ENV NODE_ENV=production

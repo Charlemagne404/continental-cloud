@@ -74,6 +74,7 @@ test('auto-start paths and launchers are per-user on every supported desktop pla
   const windows = autoStartPaths('win32', {}, 'C:\\Users\\Ada');
   assert.equal(windows.taskName, 'Continental Cloud Sync');
   assert.match(renderWindowsLauncher({ executable: 'C:\\Program Files\\nodejs\\node.exe', scriptFile: 'C:\\Cloud\\dist\\sync-cli.js', configFile: windows.configFile }), /@echo off/);
+  assert.match(renderWindowsLauncher({ executable: 'C:\\Cloud\\cloud-sync.exe', configFile: windows.configFile }), /cloud-sync\.exe.*start/);
 });
 
 test('auto-start installation writes only a user unit and uninstall leaves the sync config intact', async () => {
@@ -166,8 +167,14 @@ test('one-time pairing registers a device and consumes the code exactly once', a
   const pairing = await json<{ id: string; code: string; cloudPath: string; policy: { preset: string }; expiresAt: string }>(run, '/sync/pairing', { cloudPath: 'Projects', policy: { preset: 'project' } });
   assert.match(pairing.code, /^[A-F0-9]{6}(?:-[A-F0-9]{6}){5}$/);
   const deviceId = randomUUID(); const localPath = join(run.root, 'paired-device'); await mkdir(localPath);
-  const claim = await json<{ device: { id: string }; mapping: { cloudPath: string; localPath: string; policy: { preset: string } } }>(run, '/sync/pairing/claim', { code: pairing.code, deviceId, name: 'Paired device', platform: 'test', clientVersion: 'test', localPath });
+  const claimResponse = await fetch(`${run.base}/api/sync/pairing/claim`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: pairing.code, deviceId, name: 'Paired device', platform: 'test', clientVersion: 'test', localPath }) });
+  const claimBody = await claimResponse.json() as any; assert.equal(claimResponse.ok, true, claimBody?.error?.message);
+  const claim = claimBody.data as { token: string; device: { id: string }; mapping: { cloudPath: string; localPath: string; policy: { preset: string } } };
   assert.equal(claim.device.id, deviceId); assert.equal(claim.mapping.cloudPath, 'Projects'); assert.equal(claim.mapping.localPath, localPath); assert.equal(claim.mapping.policy.preset, 'project');
+  assert.match(claim.token, /^cc_device_/);
+  const scopedState = await fetch(`${run.base}/api/sync/state`, { headers: { 'X-Continental-Token': claim.token, 'X-Continental-Device': deviceId } }); assert.equal(scopedState.status, 200);
+  const mismatchedState = await fetch(`${run.base}/api/sync/state`, { headers: { 'X-Continental-Token': claim.token, 'X-Continental-Device': randomUUID() } }); assert.equal(mismatchedState.status, 401);
+  const generalApi = await fetch(`${run.base}/api/health`, { headers: { 'X-Continental-Token': claim.token } }); assert.equal(generalApi.status, 401);
   const status = await request<{ state: string; deviceId: string | null }>(run, `/sync/pairing/${pairing.id}`); assert.equal(status.state, 'claimed'); assert.equal(status.deviceId, deviceId);
   const reused = await fetch(`${run.base}/api/sync/pairing/claim`, { method: 'POST', headers: { 'X-Continental-Token': run.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: pairing.code, deviceId: randomUUID(), name: 'Second device', platform: 'test', clientVersion: 'test', localPath }) });
   assert.equal(reused.status, 409);
@@ -176,9 +183,16 @@ test('one-time pairing registers a device and consumes the code exactly once', a
 test('cloud-sync pair creates a local mapping and performs its initial sync', async () => {
   const run = await boot(); await json(run, '/files/folder', { parentPath: '', name: 'Projects' });
   const pairing = await json<{ code: string }>(run, '/sync/pairing', { cloudPath: 'Projects', policy: { preset: 'project' } }); const localPath = join(run.root, 'cli-device'); const configFile = join(run.root, 'cli-config.json');
-  const result = await runCli(['pair', '--server', run.base, '--token', run.token, '--code', pairing.code, '--local', localPath, '--name', 'CLI device', '--config', configFile]);
+  const result = await runCli(['pair', '--server', run.base, '--code', pairing.code, '--local', localPath, '--name', 'CLI device', '--config', configFile]);
   assert.equal(result.code, 0, result.stderr); assert.match(result.stdout, /Paired CLI device/); const config = JSON.parse(await readFile(configFile, 'utf8')) as { deviceName: string; mappings: Array<{ cloudPath: string; localPath: string; policy: { preset: string } }> };
   assert.equal(config.deviceName, 'CLI device'); assert.equal(config.mappings[0].cloudPath, 'Projects'); assert.equal(config.mappings[0].localPath, localPath); assert.equal(config.mappings[0].policy.preset, 'project'); await access(localPath);
+});
+
+test('the server creates a platform installer without putting the cloud token in it', async () => {
+  const run = await boot(); const pairing = await json<{ code: string }>(run, '/sync/pairing', { cloudPath: 'Projects', policy: { preset: 'project' } });
+  const response = await fetch(`${run.base}/api/sync/installer`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Continental-Token': run.token, 'X-Forwarded-Proto': 'https', 'X-Forwarded-Host': 'cloud.example.test' }, body: JSON.stringify({ platform: 'windows', code: pairing.code }) });
+  assert.equal(response.status, 200); assert.match(response.headers.get('content-disposition') ?? '', /Continental Cloud Sync\.cmd/);
+  const installer = await response.text(); assert.match(installer, /SERVER_URL=https:\/\/cloud\.example\.test/); assert.match(installer, /%SERVER_URL%\/downloads\/%ARTIFACT%/); assert.match(installer, new RegExp(pairing.code)); assert.doesNotMatch(installer, new RegExp(run.token));
 });
 
 test('project mapping uploads source files while leaving dependencies and build output local', async () => {

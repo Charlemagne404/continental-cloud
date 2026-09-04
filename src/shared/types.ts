@@ -167,6 +167,8 @@ export interface SyncPairing {
 export interface SyncPairingClaim {
   device: SyncDevice;
   mapping: SyncMapping;
+  /** A device-scoped credential issued after a one-time pairing. */
+  token?: string;
 }
 
 export interface JobStatus {

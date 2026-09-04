@@ -371,6 +371,10 @@ export class MetadataDatabase {
     const row = this.db.prepare('SELECT * FROM sync_pairings WHERE id=?').get(id) as any;
     return row ? pairing(row) : undefined;
   }
+  getSyncPairingByHash(codeHash: string): SyncPairing | undefined {
+    const row = this.db.prepare('SELECT * FROM sync_pairings WHERE code_hash=?').get(codeHash) as any;
+    return row ? pairing(row) : undefined;
+  }
   claimSyncPairing(codeHash: string, at: string, deviceId: string): SyncPairing | undefined {
     const row = this.db.prepare('SELECT * FROM sync_pairings WHERE code_hash=? AND claimed_at IS NULL AND expires_at>?').get(codeHash, at) as any;
     if (!row) return undefined;

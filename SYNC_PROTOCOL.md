@@ -1,10 +1,10 @@
 # Continental Cloud Sync protocol
 
-Continental Cloud Sync is a trusted-device protocol layered over the private Continental Cloud API. The reference Node daemon runs on Windows, macOS, and Linux, and is designed for a Tailscale-oriented deployment. It uses the normal `X-Continental-Token` authentication header. Sync endpoints additionally require `X-Continental-Device` after registration. Devices never mount or receive direct access to the NAS.
+Continental Cloud Sync is a trusted-device protocol layered over the private Continental Cloud API. The reference daemon runs on Windows, macOS, and Linux, and is designed for a Tailscale-oriented deployment. A client may use the normal `X-Continental-Token` authentication header, or the server-issued device-scoped token returned after pairing. Sync endpoints additionally require `X-Continental-Device` after registration. Devices never mount or receive direct access to the NAS.
 
 ## Pairing, device, and mapping lifecycle
 
-The web console can create a short-lived pairing request with `POST /api/sync/pairing`. The server stores only a SHA-256 hash of the displayed six-block code, plus the selected cloud path and policy. The target device then submits the code, its token, a locally generated device UUID, and the intended local folder to `POST /api/sync/pairing/claim`. A successful claim marks the code used, registers the trusted device, and creates the mapping. A code cannot be claimed twice and expires after 15 minutes.
+The web console can create a short-lived pairing request with `POST /api/sync/pairing`, then ask `POST /api/sync/installer` for a platform setup file. The server stores only a SHA-256 hash of the displayed six-block code, plus the selected cloud path and policy. The target device submits the code, a locally generated device UUID, and the intended local folder to `POST /api/sync/pairing/claim`; the main cloud token is not required. A successful claim marks the code used, registers the trusted device, creates the mapping, and returns a device-scoped token. A code cannot be claimed twice and expires after 15 minutes.
 
 Without pairing, a client may use the explicit lifecycle:
 

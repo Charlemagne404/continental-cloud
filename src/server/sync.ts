@@ -74,6 +74,12 @@ export class SyncService {
     const state = pairing.claimedAt ? 'claimed' : Date.parse(pairing.expiresAt) <= Date.now() ? 'expired' : 'pending';
     return { ...pairing, state };
   }
+  pairingForInstaller(code: unknown): { pairing: SyncPairing; code: string } {
+    const normalized = normalizePairingCode(code);
+    const pairing = this.db.getSyncPairingByHash(hashPairingCode(normalized));
+    if (!pairing || pairing.claimedAt || Date.parse(pairing.expiresAt) <= Date.now()) throw fail.conflict('This pairing code is invalid, expired, or already used.');
+    return { pairing, code: formatPairingCode(normalized) };
+  }
   claimPairing(input: { code?: unknown; deviceId?: unknown; name?: unknown; platform?: unknown; clientVersion?: unknown; localPath?: unknown }): SyncPairingClaim {
     const rawCode = normalizePairingCode(input.code);
     const deviceId = text(input.deviceId, 'device ID', 36); if (!UUID.test(deviceId)) throw fail.badRequest('Device ID must be a UUID.');

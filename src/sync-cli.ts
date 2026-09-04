@@ -1,6 +1,7 @@
 import { createInterface, type Interface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { access } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { createMapping, claimSyncPairing, configPath, defaultSyncHome, freshConfig, loadSyncConfig, saveSyncConfig, SyncDaemon } from './sync/client.js';
@@ -30,7 +31,8 @@ async function main(): Promise<void> {
   if (command === 'pair') { await pairDevice(); return; }
   if (command === 'install') {
     await loadSyncConfig(configFile ?? configPath());
-    const result = await installSyncAutoStart({ configFile: configFile ?? configPath(), scriptFile: resolve(process.argv[1] ?? 'dist/sync-cli.js') });
+    const packaged = Boolean((process as NodeJS.Process & { pkg?: unknown }).pkg);
+    const result = await installSyncAutoStart({ configFile: configFile ?? configPath(), scriptFile: packaged ? null : resolve(process.argv[1] ?? 'dist/sync-cli.js'), executable: packaged ? process.execPath : undefined });
     console.log(result.activated ? `Automatic sync start is active (${result.installedPath}).` : `Automatic sync start was written to ${result.installedPath}, but could not be activated.`);
     if (result.detail) console.error(`  ${result.detail}`);
     return;
@@ -65,7 +67,7 @@ function printStatus(client: SyncDaemon): void {
 }
 
 function usage(): void {
-  console.log(`Continental Cloud Sync\n\nFirst-time setup (recommended):\n  cloud-sync setup --server <url> [--no-start]\n\n  cloud-sync init --server <url> --token <token> [--name <device>]\n  cloud-sync pair --server <url> --token <token> --code <pairing-code> --local <directory> [--name <device>]\n  cloud-sync map add [--cloud <Cloud/Folder>] [--local <directory>] [--profile project|exact]\n  cloud-sync map list\n  cloud-sync sync [--mapping <id>]\n  cloud-sync start\n  cloud-sync install\n  cloud-sync uninstall\n  cloud-sync status\n  cloud-sync pause|resume <mapping-id>\n\nSetup asks a few questions, creates the local folder when needed, runs the first sync, and can keep live sync running.\nConfiguration lives in ${defaultSyncHome()} (use --config <path> for automation/tests).`);
+  console.log(`Continental Cloud Sync\n\nFirst-time setup (recommended):\n  cloud-sync setup --server <url> [--no-start]\n\n  cloud-sync init --server <url> --token <token> [--name <device>]\n  cloud-sync pair --server <url> --code <pairing-code> --local <directory> [--name <device>]\n  cloud-sync map add [--cloud <Cloud/Folder>] [--local <directory>] [--profile project|exact]\n  cloud-sync map list\n  cloud-sync sync [--mapping <id>]\n  cloud-sync start\n  cloud-sync install\n  cloud-sync uninstall\n  cloud-sync status\n  cloud-sync pause|resume <mapping-id>\n\nThe web console can download a standalone installer that pairs this computer without the repository, Node.js, or the main cloud token.\nConfiguration lives in ${defaultSyncHome()} (use --config <path> for automation/tests).`);
 }
 
 async function setup(): Promise<void> {
@@ -149,7 +151,7 @@ async function yesNo(readline: Interface | undefined, label: string, defaultYes:
 
 async function pairDevice(): Promise<void> {
   const server = flag('--server'); const token = flag('--token'); const code = flag('--code'); const local = flag('--local');
-  if (!code || !local) throw new Error('Usage: cloud-sync pair --server <url> --token <token> --code <pairing-code> --local <directory> [--name <device>]');
+  if (!code || !local) throw new Error('Usage: cloud-sync pair --server <url> --code <pairing-code> --local <directory> [--token <token>] [--name <device>]');
   const target = configFile ?? configPath();
   let config: SyncClientConfig; let newConfig = false;
   try {
@@ -159,18 +161,19 @@ async function pairDevice(): Promise<void> {
     if (token && token !== config.token) throw new Error('The supplied token does not match the existing sync configuration.');
   } catch (error) {
     if (!isMissingFile(error)) throw error;
-    if (!server || !token) throw new Error('A new sync device needs --server and --token.');
-    config = freshConfig(server, token, flag('--name') ?? defaultDeviceName()); newConfig = true;
+    if (!server) throw new Error('A new sync device needs --server.');
+    config = freshConfig(server, token ?? `pairing-bootstrap-${randomUUID()}`, flag('--name') ?? defaultDeviceName()); newConfig = true;
   }
   const requestedName = flag('--name'); if (requestedName) config.deviceName = requestedName;
-  if (newConfig) await saveSyncConfig(config, target);
-  const pairing = await claimSyncPairing(server ?? config.serverUrl, token ?? config.token, { code, deviceId: config.deviceId, name: config.deviceName, platform: config.platform, clientVersion: config.clientVersion, localPath: resolve(local) });
+  const pairing = await claimSyncPairing(server ?? config.serverUrl, newConfig && !token ? undefined : token ?? config.token, { code, deviceId: config.deviceId, name: config.deviceName, platform: config.platform, clientVersion: config.clientVersion, localPath: resolve(expandHome(local)) });
+  if (pairing.token) config.token = pairing.token;
+  else if (newConfig && !token) throw new Error('The server did not issue a device credential. Update the Continental Cloud server and try again.');
   const existing = config.mappings.find((mapping) => mapping.id === pairing.mapping.id || mapping.cloudPath === pairing.mapping.cloudPath);
   if (existing) {
-    if (resolve(existing.localPath) !== resolve(local)) throw new Error('This cloud folder is already mapped in the local sync configuration. Remove that mapping before pairing it to a different local folder.');
+    if (resolve(existing.localPath) !== resolve(expandHome(local))) throw new Error('This cloud folder is already mapped in the local sync configuration. Remove that mapping before pairing it to a different local folder.');
     existing.policy = pairing.mapping.policy;
   } else {
-    await createMapping(config, pairing.mapping.cloudPath, resolve(local), pairing.mapping.id, pairing.mapping.policy);
+    await createMapping(config, pairing.mapping.cloudPath, resolve(expandHome(local)), pairing.mapping.id, pairing.mapping.policy);
   }
   await saveSyncConfig(config, target);
   const client = new SyncDaemon(config, target);

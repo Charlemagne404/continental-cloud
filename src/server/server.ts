@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { createReadStream } from 'node:fs';
 import { lstat, stat } from 'node:fs/promises';
 import { join, extname } from 'node:path';
-import { timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { CloudConfig } from '../shared/types.js';
 import { CloudError, fail } from './errors.js';
 import { FileService, isPreviewable } from './files.js';
@@ -11,6 +11,7 @@ import { Storage } from './storage.js';
 import { UploadService } from './uploads.js';
 import { streamTar } from './archive.js';
 import { SyncNotifier, SyncService } from './sync.js';
+import { isSyncInstallerPlatform, renderSyncInstaller } from './installers.js';
 
 type Services = { db: MetadataDatabase; files: FileService; uploads: UploadService; sync: SyncService; notifier: SyncNotifier };
 const JSON_LIMIT = 1_048_576;
@@ -43,7 +44,8 @@ export function createCloudServer(config: CloudConfig) {
       const url = new URL(request.url, `http://${request.headers.host ?? 'localhost'}`);
       if (request.method === 'OPTIONS') { response.writeHead(204, corsHeaders(request, config)); response.end(); return; }
       if (url.pathname.startsWith('/api/')) {
-        authorize(request, config);
+        const unauthenticatedPairingClaim = request.method === 'POST' && url.pathname === '/api/sync/pairing/claim';
+        if (!unauthenticatedPairingClaim) authorize(request, config, url.pathname, request.method);
         if (!['GET', 'HEAD'].includes(request.method)) assertMutationOrigin(request, config);
         if (request.method === 'POST' && url.pathname === '/api/session') {
           // A short-lived browser session lets regular <a>, media, and image requests
@@ -98,13 +100,25 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
   if (method === 'POST' && pathname === '/api/sync/pairing') {
     sendJson(response, 201, { data: services.sync.createPairing(await readJson(request)) }); return;
   }
+  if (method === 'POST' && pathname === '/api/sync/installer') {
+    const body = await readJson(request);
+    if (!isSyncInstallerPlatform(body.platform)) throw fail.badRequest('Choose Windows, macOS, or Linux for the installer.');
+    const pairing = services.sync.pairingForInstaller(body.code);
+    const installer = renderSyncInstaller(body.platform, publicOrigin(request), pairing.code);
+    sendInstaller(response, installer);
+    return;
+  }
   if (method === 'POST' && pathname === '/api/sync/pairing/claim') {
-    sendJson(response, 201, { data: services.sync.claimPairing(await readJson(request)) }); return;
+    const claim = services.sync.claimPairing(await readJson(request));
+    sendJson(response, 201, { data: { ...claim, token: config.authToken ? createDeviceToken(claim.device.id, config.authToken) : 'auth-disabled-sync-token' } }); return;
   }
   const pairingStatus = pathname.match(/^\/api\/sync\/pairing\/([0-9a-f-]{36})$/i);
   if (method === 'GET' && pairingStatus) { sendJson(response, 200, { data: services.sync.pairingStatus(pairingStatus[1]) }); return; }
   if (method === 'POST' && pathname === '/api/sync/devices') {
-    const device = services.sync.registerDevice(await readJson(request)); sendJson(response, 201, { data: device }); return;
+    const body = await readJson(request);
+    const headerDevice = request.headers['x-continental-device'];
+    if (typeof headerDevice === 'string' && body.deviceId !== headerDevice) throw fail.forbidden('The sync device header does not match the registered device.');
+    const device = services.sync.registerDevice(body); sendJson(response, 201, { data: device }); return;
   }
   if (method === 'GET' && pathname === '/api/sync/devices') { sendJson(response, 200, { data: services.sync.devices() }); return; }
   const syncDevice = pathname.match(/^\/api\/sync\/devices\/([0-9a-f-]{36})$/i);
@@ -135,6 +149,8 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
     if (method === 'POST' && syncUploadComplete) { services.sync.uploadForDevice(deviceId, syncUploadComplete[1]); sendJson(response, 201, { data: await services.uploads.complete(syncUploadComplete[1]) }); return; }
     const syncUpload = pathname.match(/^\/api\/sync\/uploads\/([0-9a-f-]{36})$/i);
     if (method === 'GET' && syncUpload) { sendJson(response, 200, { data: services.sync.uploadForDevice(deviceId, syncUpload[1]) }); return; }
+    const syncNode = pathname.match(/^\/api\/sync\/files\/([0-9a-f-]{36})$/i);
+    if (method === 'GET' && syncNode) { sendJson(response, 200, { data: await services.files.getNode(syncNode[1]) }); return; }
     const syncDownload = pathname.match(/^\/api\/sync\/files\/([0-9a-f-]{36})\/download$/i);
     if (method === 'GET' && syncDownload) { const file = await services.files.getNode(syncDownload[1]); if (file.isDirectory) throw fail.badRequest('Folders cannot be downloaded as a single file.'); await sendDiskFile(request, response, await storage.pathFor(file.relativePath), false, file.mimeType ?? undefined, file.name); return; }
     if (method === 'GET' && pathname === '/api/sync/events') { await streamSyncEvents(request, response, services.notifier); return; }
@@ -260,12 +276,37 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
   throw fail.notFound('API endpoint not found.');
 }
 
-function authorize(request: IncomingMessage, config: CloudConfig): void {
+function authorize(request: IncomingMessage, config: CloudConfig, pathname: string, method: string): void {
   if (config.authDisabled) return;
   const supplied = typeof request.headers['x-continental-token'] === 'string' ? request.headers['x-continental-token'] : readCookie(request, 'cc_session');
   if (typeof supplied !== 'string' || !config.authToken) throw fail.unauthorized();
   const a = Buffer.from(supplied); const b = Buffer.from(config.authToken);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) throw fail.unauthorized();
+  if (a.length === b.length && timingSafeEqual(a, b)) return;
+  const deviceId = deviceIdFromToken(supplied, config.authToken);
+  const suppliedDevice = request.headers['x-continental-device'];
+  if (deviceId && typeof suppliedDevice === 'string' && suppliedDevice === deviceId && isDeviceApiPath(pathname, method)) return;
+  throw fail.unauthorized();
+}
+function isDeviceApiPath(pathname: string, method: string): boolean {
+  if (!pathname.startsWith('/api/sync/')) return false;
+  if (pathname === '/api/sync/devices') return method === 'POST';
+  if (pathname.startsWith('/api/sync/pairing') || pathname.startsWith('/api/sync/devices') || pathname.startsWith('/api/sync/installer')) return false;
+  return /^\/api\/sync\/(?:state|mappings|changes|snapshot|ack|folders|mutations|uploads|files|events)(?:\/|$)/.test(pathname);
+}
+function createDeviceToken(deviceId: string, secret: string): string {
+  const payload = Buffer.from(deviceId).toString('base64url');
+  const signature = createHmac('sha256', secret).update(payload).digest('base64url');
+  return `cc_device_${payload}.${signature}`;
+}
+function deviceIdFromToken(token: string, secret: string): string | undefined {
+  if (!token.startsWith('cc_device_')) return undefined;
+  const [payload, suppliedSignature] = token.slice('cc_device_'.length).split('.');
+  if (!payload || !suppliedSignature) return undefined;
+  const expected = Buffer.from(createHmac('sha256', secret).update(payload).digest('base64url'));
+  const actual = Buffer.from(suppliedSignature);
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return undefined;
+  const deviceId = Buffer.from(payload, 'base64url').toString('utf8');
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(deviceId) ? deviceId : undefined;
 }
 function requiredSyncDevice(request: IncomingMessage): string {
   const value = request.headers['x-continental-device'];
@@ -294,7 +335,7 @@ function readCookie(request: IncomingMessage, key: string): string | undefined {
 }
 function assertMutationOrigin(request: IncomingMessage, config: CloudConfig): void {
   const origin = request.headers.origin;
-  if (!origin) return; // native clients do not send Origin; they still need the API token.
+  if (!origin) return; // native clients do not send Origin; pairing claims use their one-time code instead.
   if (config.allowedOrigin && origin !== config.allowedOrigin) throw fail.forbidden('Request origin is not allowed.');
   if (!config.allowedOrigin) {
     const parsed = new URL(origin); const host = request.headers.host?.toLowerCase();
@@ -321,6 +362,10 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   try { const value = JSON.parse(Buffer.concat(parts).toString('utf8')); if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error(); return value; } catch { throw fail.badRequest('Invalid JSON request.'); }
 }
 function sendJson(response: ServerResponse, status: number, body: unknown): void { response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); response.end(JSON.stringify(body)); }
+function sendInstaller(response: ServerResponse, installer: { filename: string; contentType: string; body: string | Buffer }): void {
+  response.writeHead(200, { 'Content-Type': installer.contentType, 'Content-Disposition': `attachment; filename="${installer.filename}"`, 'Content-Length': Buffer.isBuffer(installer.body) ? installer.body.length : Buffer.byteLength(installer.body), 'Cache-Control': 'no-store' });
+  response.end(installer.body);
+}
 async function sendDiskFile(request: IncomingMessage, response: ServerResponse, path: string, inline: boolean, mimeType?: string, filename?: string): Promise<void> {
   const info = await stat(path); if (!info.isFile()) throw fail.notFound();
   const range = request.headers.range; let start = 0; let end = info.size - 1; let status = 200;
@@ -347,4 +392,14 @@ async function serveStatic(response: ServerResponse, pathname: string): Promise<
   try { const info = await lstat(path); if (!info.isFile()) throw fail.notFound(); } catch (error: unknown) { if (error instanceof CloudError) throw error; throw fail.notFound(); }
   response.writeHead(200, { 'Content-Type': STATIC_TYPES[extname(path)] ?? 'application/octet-stream', 'Cache-Control': 'public, max-age=300' });
   createReadStream(path).pipe(response);
+}
+function publicOrigin(request: IncomingMessage): string {
+  const forwardedProtocol = firstForwardedValue(request.headers['x-forwarded-proto']);
+  const protocol = forwardedProtocol === 'https' ? 'https' : 'http';
+  const host = firstForwardedValue(request.headers['x-forwarded-host']) ?? request.headers.host ?? 'localhost';
+  return `${protocol}://${host}`;
+}
+function firstForwardedValue(value: string | string[] | undefined): string | undefined {
+  const first = Array.isArray(value) ? value[0] : value;
+  return first?.split(',')[0]?.trim() || undefined;
 }

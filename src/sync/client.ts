@@ -282,7 +282,7 @@ export class SyncDaemon {
     }
     if (!change.nodeId) return;
     let node: FileNode;
-    try { node = await this.api.json<FileNode>(`/files/${change.nodeId}`); }
+    try { node = await this.api.json<FileNode>(`/sync/files/${change.nodeId}`); }
     catch (error) {
       // A later delete can make an earlier modify in this same journal window
       // unreadable. The following delete remains authoritative, so do not stall.
@@ -651,12 +651,13 @@ function finishProgress(current: SyncProgress | null): SyncProgress {
   });
 }
 
-export async function claimSyncPairing(serverUrl: string, token: string, input: { code: string; deviceId: string; name: string; platform: string; clientVersion: string; localPath: string }): Promise<SyncPairingClaim> {
+export async function claimSyncPairing(serverUrl: string, token: string | undefined, input: { code: string; deviceId: string; name: string; platform: string; clientVersion: string; localPath: string }): Promise<SyncPairingClaim> {
   const parsed = new URL(serverUrl); if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Server URL must use http or https.');
-  if (!token || token.length < 12) throw new Error('A Continental Cloud token is required.');
+  if (token !== undefined && (!token || token.length < 12)) throw new Error('A Continental Cloud token is required.');
   let response: Response;
   try {
-    response = await fetch(`${parsed.toString().replace(/\/$/, '')}/api/sync/pairing/claim`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Continental-Token': token }, body: JSON.stringify(input) });
+    const headers = new Headers({ 'Content-Type': 'application/json' }); if (token) headers.set('X-Continental-Token', token);
+    response = await fetch(`${parsed.toString().replace(/\/$/, '')}/api/sync/pairing/claim`, { method: 'POST', headers, body: JSON.stringify(input) });
   } catch (error) { throw new SyncApiError(error instanceof Error ? error.message : 'Network request failed.'); }
   const payload = await response.json().catch(() => undefined) as { data?: SyncPairingClaim; error?: { message?: string; code?: string } } | undefined;
   if (!response.ok) throw new SyncApiError(payload?.error?.message ?? `Server returned HTTP ${response.status}.`, response.status, payload?.error?.code);
