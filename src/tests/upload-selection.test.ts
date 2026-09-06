@@ -75,6 +75,17 @@ test('folder drops support the modern filesystem handle API', async () => {
   assert.deepEqual(selection.folders, ['Modern folder']);
 });
 
+test('folder discovery progress stays cumulative across multiple dropped entries', async () => {
+  const first = directoryEntry('First', [fileEntry('one.txt', testFile('one.txt', '1'))]);
+  const second = directoryEntry('Second', [fileEntry('two.txt', testFile('two.txt', '2'))]);
+  const progress: Array<{ files: number; folders: number }> = [];
+  await droppedSelection({ files: [], items: [
+    { kind: 'file', webkitGetAsEntry: () => first },
+    { kind: 'file', webkitGetAsEntry: () => second },
+  ] } as unknown as DataTransfer, (value) => progress.push(value));
+  assert.deepEqual(progress.at(-1), { files: 2, folders: 2 });
+});
+
 test('structured file-list fallback preserves nested folder paths', async () => {
   const file = testFile('settings.json', '{}', 'Project/config/settings.json');
   const transfer = { files: [file], items: [] } as unknown as DataTransfer;
@@ -92,4 +103,14 @@ test('folder selection validation rejects collisions before any upload starts', 
   assert.throws(() => validateUploadSelection([{ file, relativePath: 'Project' }], ['Project']), /file and a folder/);
   assert.equal(normalizeUploadPath('café/readme.md'), 'café/readme.md');
   assert.throws(() => normalizeUploadPath('../readme.md'), /unsafe/);
+});
+
+test('flat file selections keep same-named files for server-side suffixing', () => {
+  const first = testFile('same.txt', 'first');
+  const second = testFile('same.txt', 'second');
+  const plans = dedupeUploadPlans([
+    { file: first, relativePath: 'same.txt' },
+    { file: second, relativePath: 'same.txt' },
+  ], true);
+  assert.equal(plans.length, 2);
 });

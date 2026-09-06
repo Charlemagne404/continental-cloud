@@ -1,5 +1,5 @@
 import { dedupeUploadFolders, dedupeUploadPlans, droppedSelection, normalizeUploadPath, toUploadPlans, uploadParent, validateUploadSelection } from './upload-selection.js';
-import type { UploadPlan } from './upload-selection.js';
+import type { UploadDiscoveryProgress, UploadPlan } from './upload-selection.js';
 import { browserUuid } from './uuid.js';
 
 type FileItem = {
@@ -20,7 +20,8 @@ type FileItem = {
 };
 type View = 'drive' | 'recent' | 'favorites' | 'activity' | 'sync' | 'operations' | 'trash' | 'search';
 type UploadSession = { id: string; parentPath: string; name: string; mimeType: string | null; size: number; overwrite: boolean; chunkSize: number; chunkCount: number; receivedChunks: number[]; status: 'active' | 'failed' | 'complete' | 'cancelled'; resultNodeId?: string };
-type UploadRecord = { localId: string; file: File; relativePath: string; parentPath: string; replace: boolean; id?: string; progress: number; state: 'queued' | 'uploading' | 'error' | 'complete'; error?: string; controller?: AbortController; cancelRequested?: boolean };
+type UploadRecord = { localId: string; batchId: string; file: File; relativePath: string; parentPath: string; replace: boolean; id?: string; progress: number; state: 'queued' | 'uploading' | 'error' | 'complete'; error?: string; controller?: AbortController; cancelRequested?: boolean };
+type UploadBatch = { id: string; label: string; rootPath: string; folders: string[]; totalFiles: number; totalBytes: number; foldersTotal: number; foldersReady: number; preparing: boolean; cancelRequested: boolean; overwrite: boolean; summaryShown: boolean; error?: string; cleanupTimer?: number };
 type Notice = { message: string; tone: 'warning' | 'error' | 'info' };
 type OfflineOperation = { method: 'POST' | 'PATCH' | 'DELETE'; path: string; body?: unknown; label: string };
 type PageData = { path: string; items: FileItem[]; hasMore: boolean; offset: number; limit: number; nextOffset: number | null };
@@ -75,6 +76,8 @@ const state = {
   hasMore: false,
   loadingMore: false,
   uploads: [] as UploadRecord[],
+  uploadBatches: [] as UploadBatch[],
+  uploadDiscovery: null as (UploadDiscoveryProgress & { label: string }) | null,
   searchTimer: 0,
   syncRefreshTimer: 0,
   clipboard: null as { ids: string[]; mode: 'cut' | 'copy' } | null,
@@ -88,8 +91,12 @@ const state = {
   offlineCache: localStorage.getItem('cloud-offline-cache') === 'true',
 };
 const SNAPSHOT_PREFIX = 'continental-cloud-snapshot:';
-const MAX_PARALLEL_UPLOADS = 3;
+const MAX_PARALLEL_UPLOADS = 4;
+const MAX_PARALLEL_FOLDER_CREATION = 4;
 let activeUploadCount = 0;
+let uploadRenderTimer: number | undefined;
+let uploadRefreshTimer: number | undefined;
+let uploadRefreshPending = false;
 let pairingPoll: number | undefined;
 let installerPoll: number | undefined;
 let activePairing: PairingView | undefined;
@@ -1373,23 +1380,7 @@ async function versions(item: FileItem): Promise<void> {
 
 async function uploadFiles(files: FileList | File[], replace = false): Promise<void> { return uploadFilesAt(toUploadPlans(files, false), state.path, replace); }
 async function uploadFolder(files: FileList | File[]): Promise<void> { return uploadFilesAt(toUploadPlans(files, true), state.path, false); }
-async function uploadFilesAt(plans: UploadPlan[], parentPath: string, replace = false, folderPaths: string[] = []): Promise<void> {
-  if (!plans.length && !folderPaths.length) return toast('That folder did not contain any files.', true);
-  try {
-    const safePlans = dedupeUploadPlans(plans.map((plan) => ({ ...plan, relativePath: normalizeUploadPath(plan.relativePath) })));
-    const safeFolders = dedupeUploadFolders(folderPaths.map((folder) => normalizeUploadPath(folder)));
-    validateUploadSelection(safePlans, safeFolders);
-    await ensureUploadFolders(safePlans, parentPath, safeFolders);
-    if (!safePlans.length && safeFolders.length) await refresh();
-    state.uploads.push(...safePlans.map((plan): UploadRecord => ({ localId: browserUuid(), file: plan.file, relativePath: plan.relativePath, parentPath: uploadJoin(parentPath, uploadParent(plan.relativePath)), replace, progress: 0, state: 'queued' })));
-    renderUploads();
-    pumpUploads();
-    const uploaded = safePlans.length ? safePlans.length + ' file' + (safePlans.length === 1 ? '' : 's') + ' queued for upload.' : '';
-    const created = safeFolders.length ? safeFolders.length + ' folder' + (safeFolders.length === 1 ? '' : 's') + ' added.' : '';
-    toast([uploaded, created].filter(Boolean).join(' '));
-  } catch (error) { handleError(error); }
-}
-async function ensureUploadFolders(plans: UploadPlan[], rootPath: string, explicitFolders: string[] = []): Promise<void> {
+function requiredUploadFolders(plans: UploadPlan[], explicitFolders: string[] = []): string[] {
   const folders = new Set<string>();
   for (const folder of explicitFolders) {
     const parts = folder.split('/');
@@ -1399,30 +1390,122 @@ async function ensureUploadFolders(plans: UploadPlan[], rootPath: string, explic
     const parts = plan.relativePath.split('/').slice(0, -1);
     for (let index = 1; index <= parts.length; index++) folders.add(parts.slice(0, index).join('/'));
   }
-  const listings = new Map<string, Map<string, FileItem>>();
-  const listingFor = async (path: string, refresh = false): Promise<Map<string, FileItem>> => {
-    if (!refresh && listings.has(path)) return listings.get(path)!;
-    const entries = new Map((await listUploadFolder(path)).map((item) => [item.name, item]));
-    listings.set(path, entries);
-    return entries;
-  };
-  for (const folder of dedupeUploadFolders([...folders]).sort((left, right) => left.split('/').length - right.split('/').length || left.localeCompare(right))) {
-    const parentPath = uploadJoin(rootPath, uploadParent(folder));
-    const name = folder.split('/').at(-1)!;
-    const listing = await listingFor(parentPath);
-    const existing = listing.get(name);
-    if (existing) {
-      if (!existing.isDirectory) throw new Error('Cannot create folder ' + folder + ': a file already has that name.');
-    } else {
-      try {
-        const created = await api.json<FileItem>('/files/folder', 'POST', { parentPath, name });
-        listing.set(name, created);
-      } catch (error: any) {
-        if (error?.status !== 409) throw error;
-        const raced = (await listingFor(parentPath, true)).get(name);
-        if (!raced?.isDirectory) throw new Error('Cannot create folder ' + folder + ': a file already has that name.');
-      }
+  return dedupeUploadFolders([...folders]).sort((left, right) => left.split('/').length - right.split('/').length || left.localeCompare(right));
+}
+function uploadBatchLabel(plans: UploadPlan[], folders: string[]): string {
+  if (folders.length || plans.some((plan) => plan.relativePath.includes('/'))) return folders[0]?.split('/')[0] ?? 'Folder upload';
+  if (plans.length === 1) return plans[0].relativePath;
+  return 'File selection';
+}
+function uploadBatch(batchId: string): UploadBatch | undefined { return state.uploadBatches.find((batch) => batch.id === batchId); }
+function uploadBatchRecords(batch: UploadBatch): UploadRecord[] { return state.uploads.filter((record) => record.batchId === batch.id); }
+function uploadBatchStats(batch: UploadBatch): { records: UploadRecord[]; queued: number; active: number; complete: number; failed: number; cancelled: number; doneBytes: number; progress: number } {
+  const records = uploadBatchRecords(batch);
+  const queued = records.filter((record) => record.state === 'queued').length;
+  const active = records.filter((record) => record.state === 'uploading').length;
+  const complete = records.filter((record) => record.state === 'complete').length;
+  const failed = records.filter((record) => record.state === 'error').length;
+  const cancelled = records.filter((record) => record.state === 'error' && record.error === 'Cancelled').length;
+  const doneBytes = records.reduce((total, record) => total + (record.file.size * Math.max(0, Math.min(1, record.progress))), 0);
+  const progress = batch.preparing ? 0 : batch.totalBytes ? Math.min(1, doneBytes / batch.totalBytes) : batch.totalFiles ? (complete + failed) / batch.totalFiles : 1;
+  return { records, queued, active, complete, failed, cancelled, doneBytes, progress };
+}
+async function runWithConcurrency<T>(items: T[], limit: number, task: (item: T) => Promise<void>): Promise<void> {
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      await task(items[index]);
     }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+}
+async function prepareUploadBatch(batch: UploadBatch): Promise<void> {
+  const records = uploadBatchRecords(batch);
+  batch.preparing = true;
+  batch.error = undefined;
+  batch.foldersReady = 0;
+  renderUploads();
+  try {
+    await ensureUploadFolders(records.map((record) => ({ file: record.file, relativePath: record.relativePath })), batch.rootPath, [], batch, batch.folders);
+  } catch (error: any) {
+    batch.preparing = false;
+    batch.error = error?.message ?? 'Could not prepare the upload.';
+    for (const record of records) { record.state = 'error'; record.error = batch.error; }
+    renderUploads();
+    maybeFinalizeUploadBatch(batch);
+    return;
+  }
+  batch.preparing = false;
+  if (batch.cancelRequested) {
+    for (const record of records) { record.state = 'error'; record.error = 'Cancelled'; }
+    renderUploads();
+    maybeFinalizeUploadBatch(batch);
+    return;
+  }
+  renderUploads();
+  pumpUploads();
+  if (!records.length) maybeFinalizeUploadBatch(batch);
+}
+async function uploadFilesAt(plans: UploadPlan[], parentPath: string, replace = false, folderPaths: string[] = []): Promise<void> {
+  if (!plans.length && !folderPaths.length) return toast('That folder did not contain any files.', true);
+  try {
+    const safePlans = dedupeUploadPlans(plans.map((plan) => ({ ...plan, relativePath: normalizeUploadPath(plan.relativePath) })), !folderPaths.length && plans.every((plan) => !plan.relativePath.includes('/')));
+    const safeFolders = dedupeUploadFolders(folderPaths.map((folder) => normalizeUploadPath(folder)));
+    validateUploadSelection(safePlans, safeFolders);
+    const folders = requiredUploadFolders(safePlans, safeFolders);
+    const batch: UploadBatch = { id: browserUuid(), label: uploadBatchLabel(safePlans, safeFolders), rootPath: parentPath, folders, totalFiles: safePlans.length, totalBytes: safePlans.reduce((total, plan) => total + plan.file.size, 0), foldersTotal: folders.length, foldersReady: 0, preparing: true, cancelRequested: false, overwrite: replace, summaryShown: false };
+    const records = safePlans.map((plan): UploadRecord => ({ localId: browserUuid(), batchId: batch.id, file: plan.file, relativePath: plan.relativePath, parentPath: uploadJoin(parentPath, uploadParent(plan.relativePath)), replace, progress: 0, state: 'queued' }));
+    state.uploadBatches.push(batch);
+    state.uploads.push(...records);
+    renderUploads();
+    await prepareUploadBatch(batch);
+  } catch (error) { handleError(error); }
+}
+async function ensureUploadFolders(plans: UploadPlan[], rootPath: string, explicitFolders: string[] = [], batch?: UploadBatch, precomputedFolders?: string[]): Promise<void> {
+  const folders = precomputedFolders ?? requiredUploadFolders(plans, explicitFolders);
+  if (batch) { batch.foldersTotal = folders.length; batch.foldersReady = 0; }
+  const listings = new Map<string, Map<string, FileItem>>();
+  const listingRequests = new Map<string, Promise<Map<string, FileItem>>>();
+  const listingFor = async (path: string, refresh = false): Promise<Map<string, FileItem>> => {
+    if (refresh) { listings.delete(path); listingRequests.delete(path); }
+    if (listings.has(path)) return listings.get(path)!;
+    const pending = listingRequests.get(path);
+    if (pending) return pending;
+    const request = listUploadFolder(path).then((items) => {
+      const entries = new Map(items.map((item) => [item.name, item]));
+      listings.set(path, entries);
+      return entries;
+    }).finally(() => listingRequests.delete(path));
+    listingRequests.set(path, request);
+    return request;
+  };
+  let cursor = 0;
+  while (cursor < folders.length && !batch?.cancelRequested) {
+    const depth = folders[cursor].split('/').length;
+    const level: string[] = [];
+    while (cursor < folders.length && folders[cursor].split('/').length === depth) level.push(folders[cursor++]);
+    await runWithConcurrency(level, MAX_PARALLEL_FOLDER_CREATION, async (folder) => {
+      if (batch?.cancelRequested) return;
+      const parentPath = uploadJoin(rootPath, uploadParent(folder));
+      const name = folder.split('/').at(-1)!;
+      const listing = await listingFor(parentPath);
+      const existing = listing.get(name);
+      if (existing) {
+        if (!existing.isDirectory) throw new Error('Cannot create folder ' + folder + ': a file already has that name.');
+      } else {
+        try {
+          const created = await api.json<FileItem>('/files/folder', 'POST', { parentPath, name });
+          listing.set(name, created);
+        } catch (error: any) {
+          if (error?.status !== 409) throw error;
+          const raced = (await listingFor(parentPath, true)).get(name);
+          if (!raced?.isDirectory) throw new Error('Cannot create folder ' + folder + ': a file already has that name.');
+        }
+      }
+      if (batch && !batch.cancelRequested) { batch.foldersReady++; renderUploadsSoon(); }
+    });
   }
 }
 async function listUploadFolder(path: string): Promise<FileItem[]> {
@@ -1440,11 +1523,19 @@ function hasUploadPayload(dataTransfer: DataTransfer): boolean {
   return Array.from(dataTransfer.items ?? []).some((item) => item.kind === 'file') || dataTransfer.files.length > 0;
 }
 async function uploadDropped(dataTransfer: DataTransfer, parentPath: string): Promise<void> {
+  state.uploadDiscovery = { label: 'Reading dropped folder', files: 0, folders: 0 };
+  renderUploads();
   try {
-    const selection = await droppedSelection(dataTransfer);
+    const selection = await droppedSelection(dataTransfer, (progress) => {
+      if (!state.uploadDiscovery) return;
+      state.uploadDiscovery = { ...state.uploadDiscovery, ...progress };
+      renderUploadsSoon();
+    });
+    state.uploadDiscovery = null;
+    renderUploads();
     await uploadFilesAt(selection.plans, parentPath, false, selection.folders);
   }
-  catch (error) { handleError(error); }
+  catch (error) { state.uploadDiscovery = null; renderUploads(); handleError(error); }
 }
 function uploadAbortError(): Error { const error = new Error('Upload cancelled.'); error.name = 'AbortError'; return error; }
 function uploadProgress(session: UploadSession, received: Set<number>): number {
@@ -1471,15 +1562,17 @@ async function uploadChunkWithRetry(path: string, data: Blob, signal: AbortSigna
     }
   }
 }
+function applyUploadSessionName(record: UploadRecord, name: string): void {
+  record.relativePath = uploadJoin(uploadParent(record.relativePath), name);
+}
 async function sessionForUpload(record: UploadRecord, replace: boolean, parentPath: string, signal: AbortSignal): Promise<UploadSession> {
   const normalizedName = record.relativePath.slice(record.relativePath.lastIndexOf('/') + 1).normalize('NFC');
   if (record.id) {
     const previousId = record.id;
     try {
       const existing = await api.request<UploadSession>('/uploads/' + previousId, { signal });
-      const sameFile = existing.parentPath === record.parentPath && existing.name === normalizedName && existing.size === record.file.size && existing.overwrite === replace;
-      if (sameFile && existing.status === 'active') return existing;
-      if (sameFile && existing.status === 'complete' && existing.resultNodeId) return existing;
+      const sameFile = existing.parentPath === record.parentPath && existing.size === record.file.size && existing.overwrite === replace;
+      if (sameFile && (existing.status === 'active' || (existing.status === 'complete' && existing.resultNodeId))) { applyUploadSessionName(record, existing.name); return existing; }
       record.id = undefined;
       void api.request('/uploads/' + previousId, { method: 'DELETE' }).catch(() => undefined);
     } catch (error: any) {
@@ -1489,6 +1582,7 @@ async function sessionForUpload(record: UploadRecord, replace: boolean, parentPa
   }
   const session = await api.json<UploadSession>('/uploads', 'POST', { parentPath: record.parentPath || parentPath, name: normalizedName, size: record.file.size, mimeType: record.file.type || undefined, overwrite: replace }, signal);
   record.id = session.id;
+  applyUploadSessionName(record, session.name);
   return session;
 }
 async function uploadFile(record: UploadRecord, replace: boolean, parentPath = state.path): Promise<void> {
@@ -1499,7 +1593,7 @@ async function uploadFile(record: UploadRecord, replace: boolean, parentPath = s
     if (record.cancelRequested) throw uploadAbortError();
     const session = await sessionForUpload(record, replace, parentPath, controller.signal);
     if (session.status === 'complete' && session.resultNodeId) {
-      record.state = 'complete'; record.progress = 1; toast(record.relativePath + ' is already in your cloud.'); await refresh(); return;
+      record.state = 'complete'; record.progress = 1; return;
     }
     if (session.status !== 'active') {
       record.id = undefined;
@@ -1507,7 +1601,7 @@ async function uploadFile(record: UploadRecord, replace: boolean, parentPath = s
     }
     const received = new Set(session.receivedChunks);
     record.progress = uploadProgress(session, received);
-    renderUploads();
+    renderUploadsSoon();
     for (let index = 0; index < session.chunkCount; index++) {
       if (record.cancelRequested) throw uploadAbortError();
       if (received.has(index)) continue;
@@ -1515,28 +1609,21 @@ async function uploadFile(record: UploadRecord, replace: boolean, parentPath = s
       const result = await uploadChunkWithRetry('/uploads/' + session.id + '/chunks/' + index, record.file.slice(start, Math.min(record.file.size, start + session.chunkSize)), controller.signal);
       if (Array.isArray(result.receivedChunks)) result.receivedChunks.forEach((chunk) => received.add(chunk)); else received.add(index);
       record.progress = uploadProgress(session, received);
-      renderUploads();
+      renderUploadsSoon();
     }
     if (record.cancelRequested) throw uploadAbortError();
-    await api.json('/uploads/' + session.id + '/complete', 'POST', {}, controller.signal);
+    const completed = await api.json<{ node?: FileItem }>('/uploads/' + session.id + '/complete', 'POST', {}, controller.signal);
+    if (completed.node?.name) applyUploadSessionName(record, completed.node.name);
     record.state = 'complete';
     record.progress = 1;
-    toast(record.relativePath + ' is in your cloud.');
-    await refresh();
   } catch (error: any) {
     if (error?.name === 'AbortError' || record.cancelRequested) { record.state = 'error'; record.error = 'Cancelled'; }
-    else if (error?.status === 409 && !replace && confirm('“' + record.relativePath + '” already exists or changed while uploading. Replace it and preserve a version?')) {
-      const previousId = record.id;
-      record.id = undefined;
-      if (previousId) void api.request('/uploads/' + previousId, { method: 'DELETE' }).catch(() => undefined);
-      record.state = 'uploading'; record.progress = 0; record.error = undefined; record.cancelRequested = false; renderUploads(); await uploadFile(record, true, parentPath); return;
-    }
     else { record.state = 'error'; record.error = error?.message ?? 'Upload failed'; }
-    toast(record.relativePath + ': ' + record.error, true);
   } finally {
     record.controller = undefined;
     renderUploads();
-    if (record.state === 'complete') window.setTimeout(() => { state.uploads = state.uploads.filter((item) => item !== record); renderUploads(); }, 4000);
+    const batch = uploadBatch(record.batchId);
+    if (batch) maybeFinalizeUploadBatch(batch);
   }
 }
 function pumpUploads(): void {
@@ -1549,47 +1636,187 @@ function pumpUploads(): void {
   }
   renderUploads();
 }
+function renderUploadsSoon(): void {
+  if (uploadRenderTimer !== undefined) return;
+  uploadRenderTimer = window.setTimeout(() => { uploadRenderTimer = undefined; renderUploads(); }, 90);
+}
+function requestUploadRefresh(): void {
+  uploadRefreshPending = true;
+  if (uploadRefreshTimer !== undefined) return;
+  uploadRefreshTimer = window.setTimeout(() => {
+    uploadRefreshTimer = undefined;
+    if (state.uploadDiscovery || state.uploadBatches.some((batch) => batch.preparing) || state.uploads.some((record) => record.state === 'queued' || record.state === 'uploading')) return;
+    if (!uploadRefreshPending) return;
+    uploadRefreshPending = false;
+    void refresh();
+  }, 450);
+}
+function maybeFinalizeUploadBatch(batch: UploadBatch): void {
+  if (batch.preparing || batch.summaryShown) return;
+  const stats = uploadBatchStats(batch);
+  if (stats.queued || stats.active) return;
+  batch.summaryShown = true;
+  if (batch.error) toast(batch.label + ': ' + batch.error, true);
+  else if (stats.failed) {
+    const completed = stats.complete + ' of ' + batch.totalFiles + ' file' + (batch.totalFiles === 1 ? '' : 's') + ' uploaded';
+    const failed = stats.failed + ' failed' + (stats.cancelled ? ' or cancelled' : '');
+    toast(completed + '; ' + failed + '. Retry from the upload panel.', true);
+  } else if (batch.totalFiles) toast(batch.totalFiles + ' file' + (batch.totalFiles === 1 ? '' : 's') + ' uploaded' + (batch.foldersTotal ? ' and ' + batch.foldersTotal + ' folder' + (batch.foldersTotal === 1 ? '' : 's') + ' ready.' : '.'));
+  else toast(batch.foldersTotal + ' folder' + (batch.foldersTotal === 1 ? '' : 's') + ' added.');
+  requestUploadRefresh();
+  batch.cleanupTimer = window.setTimeout(() => {
+    const current = uploadBatch(batch.id);
+    if (!current || current.preparing || uploadBatchStats(current).queued || uploadBatchStats(current).active) return;
+    state.uploads = state.uploads.filter((record) => record.batchId !== batch.id);
+    state.uploadBatches = state.uploadBatches.filter((item) => item.id !== batch.id);
+    renderUploads();
+  }, 7000);
+}
+function cancelUploadBatch(batch: UploadBatch): void {
+  batch.cancelRequested = true;
+  for (const record of uploadBatchRecords(batch)) {
+    if (record.state === 'queued') { record.state = 'error'; record.error = 'Cancelled'; }
+    else if (record.state === 'uploading') {
+      record.cancelRequested = true;
+      record.controller?.abort();
+      if (record.id) void api.request('/uploads/' + record.id, { method: 'DELETE' }).catch(() => undefined);
+    }
+  }
+  renderUploads();
+  if (!batch.preparing) maybeFinalizeUploadBatch(batch);
+}
+function retryUploadRecord(record: UploadRecord): void {
+  const batch = uploadBatch(record.batchId);
+  if (!batch) return;
+  if (batch.error && batch.foldersReady < batch.foldersTotal) { retryFailedUploads(batch); return; }
+  if (batch.cleanupTimer !== undefined) window.clearTimeout(batch.cleanupTimer);
+  batch.summaryShown = false;
+  batch.error = undefined;
+  batch.cancelRequested = false;
+  record.state = 'queued';
+  record.progress = 0;
+  record.error = undefined;
+  record.cancelRequested = false;
+  pumpUploads();
+}
+function retryFailedUploads(batch: UploadBatch): void {
+  if (batch.error && batch.foldersReady < batch.foldersTotal) {
+    if (batch.cleanupTimer !== undefined) window.clearTimeout(batch.cleanupTimer);
+    batch.summaryShown = false;
+    batch.error = undefined;
+    batch.cancelRequested = false;
+    for (const record of uploadBatchRecords(batch)) {
+      record.state = 'queued';
+      record.progress = 0;
+      record.error = undefined;
+      record.cancelRequested = false;
+    }
+    void prepareUploadBatch(batch);
+    return;
+  }
+  for (const record of uploadBatchRecords(batch)) if (record.state === 'error') retryUploadRecord(record);
+}
 function renderUploads(): void {
+  if (uploadRenderTimer !== undefined) { window.clearTimeout(uploadRenderTimer); uploadRenderTimer = undefined; }
   const dock = $('#upload-dock');
   dock.replaceChildren();
-  dock.hidden = state.uploads.length === 0;
-  for (const record of state.uploads) {
-    const row = document.createElement('div');
-    row.className = 'upload-item';
+  const hasUploads = Boolean(state.uploadDiscovery || state.uploadBatches.length);
+  dock.hidden = !hasUploads;
+  if (!hasUploads) return;
+  const heading = document.createElement('div');
+  heading.className = 'upload-dock-heading';
+  const headingTitle = document.createElement('strong');
+  headingTitle.textContent = state.uploadDiscovery ? state.uploadDiscovery.label : 'Uploads';
+  const headingCopy = document.createElement('span');
+  if (state.uploadDiscovery) headingCopy.textContent = state.uploadDiscovery.files + ' files · ' + state.uploadDiscovery.folders + ' folders found';
+  else {
+    const active = state.uploads.filter((record) => record.state === 'uploading').length;
+    const queued = state.uploads.filter((record) => record.state === 'queued').length;
+    headingCopy.textContent = active ? active + ' active' + (queued ? ' · ' + queued.toLocaleString() + ' waiting' : '') : queued ? queued.toLocaleString() + ' waiting' : 'Recent activity';
+  }
+  heading.append(headingTitle, headingCopy);
+  dock.append(heading);
+  if (state.uploadDiscovery) {
+    const discovery = document.createElement('div');
+    discovery.className = 'upload-preparing';
+    discovery.textContent = 'Reading the folder structure…';
+    dock.append(discovery);
+  }
+  for (const batch of state.uploadBatches) {
+    const stats = uploadBatchStats(batch);
+    const card = document.createElement('article');
+    card.className = 'upload-batch' + (stats.failed && !stats.active && !stats.queued ? ' has-errors' : '');
+    const title = document.createElement('div');
+    title.className = 'upload-batch-title';
     const name = document.createElement('b');
-    name.textContent = record.relativePath;
-    const button = document.createElement('button');
-    button.textContent = record.state === 'uploading' || record.state === 'queued' ? 'Cancel' : record.state === 'error' ? 'Retry' : 'Done';
-    button.disabled = record.state === 'complete';
-    button.addEventListener('click', () => {
-      if (record.state === 'uploading') {
-        record.cancelRequested = true;
-        record.controller?.abort();
-        if (record.id) api.request('/uploads/' + record.id, { method: 'DELETE' }).catch(() => undefined);
-      } else if (record.state === 'queued') {
-        record.cancelRequested = true;
-        record.state = 'error';
-        record.error = 'Cancelled';
-        renderUploads();
-      } else if (record.state === 'error') {
-        record.state = 'queued';
-        record.progress = 0;
-        record.error = undefined;
-        record.cancelRequested = false;
-        pumpUploads();
-        renderUploads();
-      }
-    });
+    name.textContent = batch.label;
+    const action = document.createElement('button');
+    action.className = 'quiet-button';
+    if (batch.preparing || stats.active || stats.queued) {
+      action.textContent = batch.preparing ? 'Cancel' : 'Cancel upload';
+      action.addEventListener('click', () => cancelUploadBatch(batch));
+    } else if (stats.failed) {
+      action.textContent = 'Retry failed';
+      action.addEventListener('click', () => retryFailedUploads(batch));
+    } else action.textContent = 'Done';
+    action.disabled = !batch.preparing && !stats.active && !stats.queued && !stats.failed;
+    title.append(name, action);
     const status = document.createElement('span');
-    status.className = 'upload-status';
-    status.textContent = record.state === 'queued' ? 'Waiting…' : record.state === 'error' ? record.error ?? 'Failed' : Math.round(record.progress * 100) + '%';
+    status.className = 'upload-batch-status';
+    if (batch.preparing) status.textContent = 'Preparing folders · ' + batch.foldersReady + '/' + batch.foldersTotal;
+    else if (batch.error) status.textContent = batch.error;
+    else if (stats.failed && !stats.active && !stats.queued) status.textContent = stats.complete + '/' + batch.totalFiles + ' complete · ' + stats.failed + ' failed';
+    else if (!batch.totalFiles) status.textContent = batch.foldersTotal + ' folder' + (batch.foldersTotal === 1 ? '' : 's') + ' ready';
+    else status.textContent = stats.complete + '/' + batch.totalFiles + ' complete · ' + (stats.progress * 100).toFixed(0) + '%';
     const track = document.createElement('div');
     track.className = 'upload-progress';
     const bar = document.createElement('i');
-    bar.style.width = record.progress * 100 + '%';
+    bar.style.width = Math.round(stats.progress * 100) + '%';
     track.append(bar);
-    row.append(name, button, status, track);
-    dock.append(row);
+    const bytes = document.createElement('span');
+    bytes.className = 'upload-batch-bytes';
+    bytes.textContent = batch.totalFiles ? batch.totalBytes ? human(stats.doneBytes) + ' of ' + human(batch.totalBytes) : stats.complete + ' of ' + batch.totalFiles + ' files processed' : batch.foldersReady + ' of ' + batch.foldersTotal + ' folders';
+    card.append(title, status, track, bytes);
+    if (batch.error) {
+      const error = document.createElement('p');
+      error.className = 'upload-queue-note error';
+      error.textContent = batch.error;
+      card.append(error);
+    }
+    const visible = stats.records.filter((record) => record.state === 'uploading' || record.state === 'error').slice(0, 4);
+    for (const record of visible) {
+      const row = document.createElement('div');
+      row.className = 'upload-item' + (record.state === 'error' ? ' error' : '');
+      const itemName = document.createElement('b');
+      itemName.textContent = record.relativePath;
+      itemName.title = record.relativePath;
+      const button = document.createElement('button');
+      if (record.state === 'uploading') {
+        button.textContent = 'Cancel';
+        button.addEventListener('click', () => { record.cancelRequested = true; record.controller?.abort(); if (record.id) void api.request('/uploads/' + record.id, { method: 'DELETE' }).catch(() => undefined); });
+      } else {
+        button.textContent = 'Retry';
+        button.addEventListener('click', () => retryUploadRecord(record));
+      }
+      const itemStatus = document.createElement('span');
+      itemStatus.className = 'upload-status';
+      itemStatus.textContent = record.state === 'error' ? record.error ?? 'Failed' : Math.round(record.progress * 100) + '%';
+      const itemTrack = document.createElement('div');
+      itemTrack.className = 'upload-progress';
+      const itemBar = document.createElement('i');
+      itemBar.style.width = Math.round(record.progress * 100) + '%';
+      itemTrack.append(itemBar);
+      row.append(itemName, button, itemStatus, itemTrack);
+      card.append(row);
+    }
+    const remaining = stats.queued + Math.max(0, stats.records.filter((record) => record.state === 'uploading' || record.state === 'error').length - visible.length);
+    if (remaining) {
+      const note = document.createElement('p');
+      note.className = 'upload-queue-note';
+      note.textContent = remaining.toLocaleString() + ' more file' + (remaining === 1 ? '' : 's') + ' are managed in the background.';
+      card.append(note);
+    }
+    dock.append(card);
   }
 }
 

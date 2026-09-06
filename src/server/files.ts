@@ -6,7 +6,7 @@ import sharp from 'sharp';
 import type { FileNode } from '../shared/types.js';
 import { fail } from './errors.js';
 import { MetadataDatabase } from './metadata.js';
-import { joinRelative, normalizeFileName, normalizeRelativePath, parentPath, resolveExistingNoSymlink } from './paths.js';
+import { MAX_PATH_COMPONENT_BYTES, joinRelative, normalizeFileName, normalizeRelativePath, parentPath, resolveExistingNoSymlink } from './paths.js';
 import { Storage, type DiskEntry } from './storage.js';
 
 const MIME_TYPES: Record<string, string> = {
@@ -471,10 +471,13 @@ export class FileService {
     const path = await this.storage.pathFor(relativePath); const info = await lstat(path);
     return { relativePath, name: basename(relativePath), isDirectory: info.isDirectory(), size: info.size, birthtime: info.birthtime, mtime: info.mtime };
   }
-  private async availablePath(parent: string, requestedName: string): Promise<string> {
+  async availablePath(parent: string, requestedName: string, reservedPaths: Iterable<string> = []): Promise<string> {
     const name = normalizeFileName(requestedName); const extension = extname(name); const stem = extension ? name.slice(0, -extension.length) : name;
+    const reserved = new Set([...reservedPaths].map(portablePath));
     for (let attempt = 0; attempt < 10_000; attempt++) {
-      const candidate = joinRelative(parent, attempt === 0 ? name : `${stem} (${attempt})${extension}`);
+      const candidateName = attempt === 0 ? name : duplicateName(stem, extension, attempt);
+      const candidate = joinRelative(parent, candidateName);
+      if (reserved.has(portablePath(candidate))) continue;
       if (!(await this.exists(candidate))) return candidate;
     }
     throw fail.conflict('Could not find an available file name.');
@@ -512,6 +515,22 @@ export class FileService {
     this.db.addActivity(action, nodeId, path, detail);
     this.db.addChange(action, nodeId, path, detail, options);
   }
+}
+
+function portablePath(value: string): string { return value.normalize('NFC').toLocaleLowerCase('en-US'); }
+function duplicateName(stem: string, extension: string, attempt: number): string {
+  const suffix = ` (${attempt})${extension}`;
+  const remainingBytes = MAX_PATH_COMPONENT_BYTES - Buffer.byteLength(suffix, 'utf8');
+  if (remainingBytes < 0) throw fail.badRequest('The file name is too long to create a duplicate copy.');
+  return normalizeFileName(truncateUtf8(stem, remainingBytes) + suffix);
+}
+function truncateUtf8(value: string, maxBytes: number): string {
+  let result = '';
+  for (const character of value) {
+    if (Buffer.byteLength(result + character, 'utf8') > maxBytes) break;
+    result += character;
+  }
+  return result;
 }
 
 async function copyWithoutSymlinks(source: string, destination: string, markCreated?: () => void): Promise<void> {

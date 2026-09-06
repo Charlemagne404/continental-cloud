@@ -98,7 +98,7 @@ test('source, project, archive, and extensionless files retain their exact bytes
   }
 });
 
-test('interrupted chunks remain resumable and a late collision never overwrites the first upload', async () => {
+test('interrupted chunks remain resumable and same-name uploads receive distinct suffixes', async () => {
   const run = await boot();
   const bytes = Uint8Array.from([1, 2, 3, 4, 5]);
   const started = await json<{ data: { id: string; chunkSize: number; chunkCount: number; status: string } }>(run, '/uploads', 'POST', { parentPath: '', name: 'resume.bin', size: bytes.length });
@@ -124,27 +124,28 @@ test('interrupted chunks remain resumable and a late collision never overwrites 
   const completed = await json<{ data: { node: { name: string } } }>(run, `/uploads/${started.body.data.id}/complete`, 'POST', {});
   assert.equal(completed.response.status, 201);
 
-  const first = await json<{ data: { id: string; chunkSize: number } }>(run, '/uploads', 'POST', { parentPath: '', name: 'collision.bin', size: 1 });
-  const second = await json<{ data: { id: string; chunkSize: number } }>(run, '/uploads', 'POST', { parentPath: '', name: 'collision.bin', size: 1 });
+  const first = await json<{ data: { id: string; name: string; chunkSize: number } }>(run, '/uploads', 'POST', { parentPath: '', name: 'collision.bin', size: 1 });
+  const second = await json<{ data: { id: string; name: string; chunkSize: number } }>(run, '/uploads', 'POST', { parentPath: '', name: 'collision.bin', size: 1 });
+  assert.equal(first.body.data.name, 'collision.bin');
+  assert.equal(second.body.data.name, 'collision (1).bin');
   for (const id of [first.body.data.id, second.body.data.id]) {
     const result = await request(run, `/uploads/${id}/chunks/0`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': '1' }, body: Uint8Array.of(id === first.body.data.id ? 7 : 9) });
     assert.equal(result.response.status, 200);
   }
   assert.equal((await json(run, `/uploads/${first.body.data.id}/complete`, 'POST', {})).response.status, 201);
-  const late = await json<{ error: { code: string } }>(run, `/uploads/${second.body.data.id}/complete`, 'POST', {});
-  assert.equal(late.response.status, 409);
+  assert.equal((await json(run, `/uploads/${second.body.data.id}/complete`, 'POST', {})).response.status, 201);
   assert.equal((await readFile(join(run.root, 'storage', 'data', 'collision.bin')))[0], 7);
+  assert.equal((await readFile(join(run.root, 'storage', 'data', 'collision (1).bin')))[0], 9);
 });
 
-test('same-destination completions are serialized and only one upload wins', async () => {
+test('concurrent same-name uploads reserve separate destinations before completion', async () => {
   const run = await boot();
-  const sessions = await Promise.all([7, 9].map((value) => json<{ data: { id: string; chunkSize: number } }>(run, '/uploads', 'POST', { parentPath: '', name: 'parallel.bin', size: 1 })));
+  const sessions = await Promise.all([7, 9].map(() => json<{ data: { id: string; name: string; chunkSize: number } }>(run, '/uploads', 'POST', { parentPath: '', name: 'parallel.bin', size: 1 })));
+  assert.deepEqual(new Set(sessions.map((session) => session.body.data.name)), new Set(['parallel.bin', 'parallel (1).bin']));
   await Promise.all(sessions.map((started, index) => request(run, `/uploads/${started.body.data.id}/chunks/0`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': '1' }, body: Uint8Array.of(index ? 9 : 7) })));
-  const completed = await Promise.all(sessions.map((started) => json(run, `/uploads/${started.body.data.id}/complete`, 'POST', {})));
-  assert.equal(completed.filter((result) => result.response.status === 201).length, 1);
-  assert.equal(completed.filter((result) => result.response.status === 409).length, 1);
-  const stored = await readFile(join(run.root, 'storage', 'data', 'parallel.bin'));
-  assert(stored[0] === 7 || stored[0] === 9);
+  const completed = await Promise.all(sessions.map((started) => json<{ data: { node: { name: string } } }>(run, `/uploads/${started.body.data.id}/complete`, 'POST', {})));
+  assert(completed.every((result) => result.response.status === 201));
+  for (const [index, result] of completed.entries()) assert.equal((await readFile(join(run.root, 'storage', 'data', result.body.data.node.name)))[0], index ? 9 : 7);
 });
 
 test('starting an upload reconciles a file removed outside the app', async () => {
@@ -221,9 +222,34 @@ test('rename, copy, trash and restore keep paths recoverable', async () => {
   assert.equal((await (await import('node:fs/promises')).readFile(join(run.root, 'storage', 'data', 'Field notes', 'map.txt'), 'utf8')), 'ridge line');
 });
 
-test('collisions are explicit and reconciliation notices external files', async () => {
-  const run = await boot(); await upload(run, 'same.txt', 'one'); const duplicate = await json<{ error: { code: string } }>(run, '/uploads', 'POST', { parentPath: '', name: 'same.txt', size: 3 }); assert.equal(duplicate.response.status, 409); assert.equal(duplicate.body.error.code, 'CONFLICT');
-  await writeFile(join(run.root, 'storage', 'data', 'outside-added.md'), '# external'); const scan = await json<{ data: { indexed: number } }>(run, '/storage/reconcile', 'POST', {}); assert(scan.body.data.indexed >= 2);
+test('same-name uploads preserve the extension and continue numbering', async () => {
+  const run = await boot(); await upload(run, 'same.txt', 'one');
+  const duplicate = await upload(run, 'same.txt', 'two');
+  const third = await upload(run, 'same.txt', 'three');
+  assert.equal(duplicate.name, 'same (1).txt');
+  assert.equal(third.name, 'same (2).txt');
+  assert.equal(await readFile(join(run.root, 'storage', 'data', 'same (1).txt'), 'utf8'), 'two');
+  assert.equal(await readFile(join(run.root, 'storage', 'data', 'same (2).txt'), 'utf8'), 'three');
+});
+
+test('an external file appearing during an upload is preserved by the next suffix', async () => {
+  const run = await boot();
+  const started = await json<{ data: { id: string; chunkSize: number } }>(run, '/uploads', 'POST', { parentPath: '', name: 'late.txt', size: 3 });
+  const chunk = await request(run, `/uploads/${started.body.data.id}/chunks/0`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': '3' }, body: Uint8Array.from([1, 2, 3]) });
+  assert.equal(chunk.response.status, 200);
+  await writeFile(join(run.root, 'storage', 'data', 'late.txt'), 'external');
+  const completed = await json<{ data: { node: { name: string } } }>(run, `/uploads/${started.body.data.id}/complete`, 'POST', {});
+  assert.equal(completed.response.status, 201);
+  assert.equal(completed.body.data.node.name, 'late (1).txt');
+  const status = await request<{ data: { name: string } }>(run, `/uploads/${started.body.data.id}`);
+  assert.equal(status.body.data.name, 'late (1).txt');
+  assert.equal(await readFile(join(run.root, 'storage', 'data', 'late.txt'), 'utf8'), 'external');
+  assert.deepEqual(new Uint8Array(await readFile(join(run.root, 'storage', 'data', 'late (1).txt'))), Uint8Array.from([1, 2, 3]));
+});
+
+test('reconciliation notices external files', async () => {
+  const run = await boot();
+  await writeFile(join(run.root, 'storage', 'data', 'outside-added.md'), '# external'); const scan = await json<{ data: { indexed: number } }>(run, '/storage/reconcile', 'POST', {}); assert(scan.body.data.indexed >= 1);
   const search = await request<{ data: Array<{ name: string }> }>(run, '/search?q=outside-added'); assert.equal(search.body.data[0].name, 'outside-added.md');
 });
 

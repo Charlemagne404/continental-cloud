@@ -1,6 +1,6 @@
 import { lstat, mkdir, open, rename, rm } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { SyncUploadContext, UploadSession } from '../shared/types.js';
 import type { FileNode } from '../shared/types.js';
@@ -33,15 +33,17 @@ export class UploadService {
           return withoutPrivateUploadFields(prior);
         }
       }
-      const target = joinRelative(parentPath, name);
-      await this.files.storage.assertParentSafe(target);
       await this.files.syncDirectory(parentPath);
+      const requestedTarget = joinRelative(parentPath, name);
+      const reserved = this.files.db.listActiveUploadTargets().map((item) => joinRelative(item.parentPath, item.name));
+      const target = overwrite ? requestedTarget : await this.files.availablePath(parentPath, name, reserved);
+      await this.files.storage.assertParentSafe(target);
       const existing = this.files.db.getActiveNodeByPath(target);
       if (existing?.isDirectory) throw fail.conflict('A folder already has that name.');
       if (existing && !overwrite) throw fail.conflict('A file with that name already exists. Choose a different name or replace it.');
       await this.files.storage.internalExisting(join(this.files.storage.internalRoot, 'temp'));
       const id = randomUUID();
-      const session: UploadSession = { id, parentPath, name, mimeType, size, overwrite, chunkSize: this.chunkBytes, chunkCount: Math.max(1, Math.ceil(size / this.chunkBytes)), receivedChunks: [], status: 'active', createdAt: new Date().toISOString(), sync };
+      const session: UploadSession = { id, parentPath, name: basename(target), mimeType, size, overwrite, chunkSize: this.chunkBytes, chunkCount: Math.max(1, Math.ceil(size / this.chunkBytes)), receivedChunks: [], status: 'active', createdAt: new Date().toISOString(), sync };
       const tempName = `${id}.part`;
       const tempPath = join(this.files.storage.internalRoot, 'temp', tempName);
       let handle: Awaited<ReturnType<typeof open>> | undefined;
@@ -111,6 +113,10 @@ export class UploadService {
         let target = requestedTarget;
         await this.files.storage.assertParentSafe(target);
         await this.files.syncDirectory(session.parentPath);
+        if (!session.overwrite) {
+          const reserved = this.files.db.listActiveUploadTargets(uploadId).map((item) => joinRelative(item.parentPath, item.name));
+          target = await this.files.availablePath(session.parentPath, session.name, reserved);
+        }
         const tempPath = uploadTempPath(this.files, session);
         let tempInfo: Awaited<ReturnType<typeof lstat>>;
         try { tempInfo = await lstat(tempPath); }
@@ -167,7 +173,7 @@ export class UploadService {
         const action = conflict ? 'sync_conflict' : 'uploaded';
         const detail = conflict ? `conflict_copy_of=${requestedTarget}` : versionCreated ? 'replaced_existing_file' : null;
         try {
-          node = this.files.db.finalizeUpload({ uploadId, target, size: session.size, mimeType: session.mimeType, checksum, existingNodeId: existing?.id, action, detail, operation: existing ? 'modify' : 'create', deviceId: session.sync?.deviceId });
+          node = this.files.db.finalizeUpload({ uploadId, target, size: session.size, mimeType: session.mimeType, checksum, existingNodeId: existing?.id, action, detail, operation: existing ? 'modify' : 'create', deviceId: session.sync?.deviceId, completedName: session.sync ? undefined : basename(target) });
         } catch (error: unknown) {
           await rollbackCommittedUpload(uploadId, target, movedVersion, this.files);
           if (error instanceof Error && ['UPLOAD_TARGET_CHANGED', 'UPLOAD_SESSION_CHANGED'].includes(error.message)) throw fail.conflict('The upload target changed while it was completing. Retry the upload.');

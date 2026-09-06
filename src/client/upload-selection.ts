@@ -1,5 +1,6 @@
 export type UploadPlan = { file: File; relativePath: string };
 export type UploadSelection = { plans: UploadPlan[]; folders: string[] };
+export type UploadDiscoveryProgress = { files: number; folders: number };
 
 type LegacyFileEntry = {
   isFile: boolean;
@@ -27,10 +28,15 @@ export function toUploadPlans(files: FileList | File[], preservePaths: boolean):
   }));
 }
 
-export function dedupeUploadPlans(plans: UploadPlan[]): UploadPlan[] {
+export function dedupeUploadPlans(plans: UploadPlan[], allowFlatDuplicates = false): UploadPlan[] {
   const byPath = new Map<string, UploadPlan>();
   const byPortablePath = new Map<string, string>();
+  const flatPlans: UploadPlan[] = [];
   for (const plan of plans) {
+    if (allowFlatDuplicates && !plan.relativePath.includes('/')) {
+      flatPlans.push(plan);
+      continue;
+    }
     const existing = byPath.get(plan.relativePath);
     if (existing) {
       if (existing.file.size !== plan.file.size || existing.file.lastModified !== plan.file.lastModified || existing.file.type !== plan.file.type) {
@@ -46,7 +52,7 @@ export function dedupeUploadPlans(plans: UploadPlan[]): UploadPlan[] {
     byPortablePath.set(portablePath, plan.relativePath);
     byPath.set(plan.relativePath, plan);
   }
-  return [...byPath.values()];
+  return [...byPath.values(), ...flatPlans];
 }
 
 export function dedupeUploadFolders(folders: string[]): string[] {
@@ -112,7 +118,7 @@ export function normalizeUploadPath(value: string): string {
  * preferred because they retain directory structure; flattened files are only
  * used when entry traversal is unavailable or cannot be completed safely.
  */
-export async function droppedSelection(dataTransfer: DataTransfer): Promise<UploadSelection> {
+export async function droppedSelection(dataTransfer: DataTransfer, onProgress?: (progress: UploadDiscoveryProgress) => void): Promise<UploadSelection> {
   const fallback = toUploadPlans(dataTransfer.files, true);
   const items = Array.from(dataTransfer.items ?? []);
   const entries: DropNode[] = [];
@@ -158,8 +164,15 @@ export async function droppedSelection(dataTransfer: DataTransfer): Promise<Uplo
   }
   try {
     const discovered: UploadSelection = { plans: [], folders: [] };
+    const totalProgress: UploadDiscoveryProgress = { files: 0, folders: 0 };
     for (const entry of entries) {
-      const selection = await walkDropEntry(entry);
+      let entryProgress: UploadDiscoveryProgress = { files: 0, folders: 0 };
+      const selection = await walkDropEntry(entry, '', (progress) => {
+        totalProgress.files += progress.files - entryProgress.files;
+        totalProgress.folders += progress.folders - entryProgress.folders;
+        entryProgress = { ...progress };
+        onProgress?.({ ...totalProgress });
+      });
       discovered.plans.push(...selection.plans);
       discovered.folders.push(...selection.folders);
     }
@@ -175,22 +188,26 @@ export async function droppedSelection(dataTransfer: DataTransfer): Promise<Uplo
   }
 }
 
-export async function walkDropEntry(entry: DropNode, prefix = ''): Promise<UploadSelection> {
+export async function walkDropEntry(entry: DropNode, prefix = '', onProgress?: (progress: UploadDiscoveryProgress) => void): Promise<UploadSelection> {
   const selection: UploadSelection = { plans: [], folders: [] };
   const pending: Array<{ entry: DropNode; prefix: string }> = [{ entry, prefix }];
   let visited = 0;
+  const progress: UploadDiscoveryProgress = { files: 0, folders: 0 };
   while (pending.length) {
     const current = pending.pop()!;
     const path = current.prefix ? current.prefix + '/' + current.entry.name : current.entry.name;
     if (current.entry.kind === 'file' && current.entry.getFile) {
       selection.plans.push({ file: await current.entry.getFile(), relativePath: path });
+      progress.files++;
     } else if (current.entry.kind === 'directory' && current.entry.readChildren) {
       selection.folders.push(path);
+      progress.folders++;
       const children = await current.entry.readChildren();
       for (let index = children.length - 1; index >= 0; index--) pending.push({ entry: children[index], prefix: path });
     } else {
       throw new Error('Could not read the dropped folder structure.');
     }
+    onProgress?.(progress);
     visited++;
     if (visited % 64 === 0) await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }

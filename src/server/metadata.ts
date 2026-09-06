@@ -355,7 +355,13 @@ export class MetadataDatabase {
   updateUploadChunks(id: string, receivedChunks: number[]): void { this.db.prepare('UPDATE upload_sessions SET received_chunks=? WHERE id=?').run(JSON.stringify(receivedChunks), id); }
   updateUploadStatus(id: string, status: UploadSession['status']): void { this.db.prepare('UPDATE upload_sessions SET status=? WHERE id=?').run(status, id); }
   completeUpload(id: string, nodeId: string): void { this.db.prepare("UPDATE upload_sessions SET status='complete',result_node_id=? WHERE id=?").run(nodeId, id); }
-  finalizeUpload(input: { uploadId: string; target: string; size: number; mimeType: string | null; checksum: string; existingNodeId?: string; action: string; detail: string | null; operation: SyncOperation; deviceId?: string }): FileNode {
+  listActiveUploadTargets(excludeId?: string): Array<{ parentPath: string; name: string }> {
+    const rows = (excludeId
+      ? this.db.prepare("SELECT parent_path,name FROM upload_sessions WHERE status='active' AND id<>?").all(excludeId)
+      : this.db.prepare("SELECT parent_path,name FROM upload_sessions WHERE status='active'").all()) as Array<{ parent_path: string; name: string }>;
+    return rows.map((row) => ({ parentPath: row.parent_path, name: row.name }));
+  }
+  finalizeUpload(input: { uploadId: string; target: string; size: number; mimeType: string | null; checksum: string; existingNodeId?: string; action: string; detail: string | null; operation: SyncOperation; deviceId?: string; completedName?: string }): FileNode {
     this.db.exec('BEGIN IMMEDIATE');
     let change: ChangeEvent | undefined;
     try {
@@ -375,7 +381,7 @@ export class MetadataDatabase {
         this.upsertFts(id, targetName, input.target);
         node = this.getNode(id)!;
       }
-      const upload = this.db.prepare("UPDATE upload_sessions SET status='complete',result_node_id=? WHERE id=? AND status='active'").run(node.id, input.uploadId);
+      const upload = this.db.prepare("UPDATE upload_sessions SET status='complete',result_node_id=?,name=COALESCE(?,name) WHERE id=? AND status='active'").run(node.id, input.completedName ?? null, input.uploadId);
       if (Number(upload.changes) !== 1) throw new Error('UPLOAD_SESSION_CHANGED');
       this.db.prepare('INSERT INTO activity (id,action,node_id,path,detail,created_at) VALUES (?,?,?,?,?,?)').run(randomUUID(), input.action, node.id, input.target, input.detail, timestamp);
       const createdAt = now();
