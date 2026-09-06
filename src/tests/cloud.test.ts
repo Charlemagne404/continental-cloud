@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { lstat, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CloudConfig } from '../shared/types.js';
+import { loadConfig } from '../server/config.js';
 import { createCloudServer } from '../server/server.js';
 import { Storage } from '../server/storage.js';
 import { resolveExistingNoSymlink } from '../server/paths.js';
@@ -23,7 +25,10 @@ async function request<T>(run: Running, path: string, init: RequestInit = {}): P
 }
 async function json<T>(run: Running, path: string, method: string, body: unknown): Promise<{ response: Response; body: T }> { return request<T>(run, path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
 async function upload(run: Running, name: string, data: string, overwrite = false): Promise<any> {
-  const bytes = new TextEncoder().encode(data); const started = await json<{ data: { id: string; chunkSize: number; chunkCount: number } }>(run, '/uploads', 'POST', { parentPath: '', name, size: bytes.byteLength, mimeType: 'text/plain', overwrite }); assert.equal(started.response.status, 201);
+  return uploadBytes(run, name, new TextEncoder().encode(data), 'text/plain', overwrite);
+}
+async function uploadBytes(run: Running, name: string, bytes: Uint8Array, mimeType?: string, overwrite = false): Promise<any> {
+  const started = await json<{ data: { id: string; chunkSize: number; chunkCount: number } }>(run, '/uploads', 'POST', { parentPath: '', name, size: bytes.byteLength, mimeType, overwrite }); assert.equal(started.response.status, 201);
   for (let index = 0; index < started.body.data.chunkCount; index++) { const part = bytes.slice(index * started.body.data.chunkSize, Math.min(bytes.length, (index + 1) * started.body.data.chunkSize)); const result = await request(run, `/uploads/${started.body.data.id}/chunks/${index}`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(part.byteLength) }, body: part }); assert.equal(result.response.status, 200); }
   const complete = await json<{ data: { node: any } }>(run, `/uploads/${started.body.data.id}/complete`, 'POST', {}); assert.equal(complete.response.status, 201); return complete.body.data.node;
 }
@@ -36,6 +41,12 @@ test('API requires its token and blocks traversal and internals', async () => {
   const cors = await fetch(`${run.base}/api/files`, { method: 'OPTIONS', headers: { Origin: 'https://untrusted.example', 'Access-Control-Request-Method': 'GET' } }); assert.equal(cors.headers.get('access-control-allow-origin'), null);
 });
 
+test('configuration fails closed for production-like environment values and unsafe hosts', () => {
+  assert.throws(() => loadConfig({ NODE_ENV: 'Production', CLOUD_AUTH_DISABLED: 'true' }), /forbidden in production/);
+  assert.throws(() => loadConfig({ NODE_ENV: 'development', CLOUD_AUTH_DISABLED: 'true', CLOUD_HOST: '127.0.0.1\nattacker' }), /control characters/);
+  assert.throws(() => loadConfig({ NODE_ENV: 'development', CLOUD_AUTH_DISABLED: 'true', CLOUD_ALLOWED_ORIGIN: 'https://example.test/path' }), /without a path/);
+});
+
 test('symlinks cannot escape the data root', async () => {
   const run = await boot(); const outside = join(run.root, 'outside.txt'); await writeFile(outside, 'not cloud data'); await symlink(outside, join(run.root, 'storage', 'data', 'escape.txt'));
   await assert.rejects(() => resolveExistingNoSymlink(join(run.root, 'storage', 'data'), 'escape.txt'), { code: 'FORBIDDEN' });
@@ -43,11 +54,142 @@ test('symlinks cannot escape the data root', async () => {
 });
 
 test('chunked uploads create normal files and preserve/restore versions', async () => {
-  const run = await boot(); const original = await upload(run, 'notes.txt', 'first version'); const firstPath = join(run.root, 'storage', 'data', 'notes.txt'); assert.equal((await (await import('node:fs/promises')).readFile(firstPath, 'utf8')), 'first version');
+  const run = await boot(); const original = await upload(run, 'notes.txt', 'first version'); const firstPath = join(run.root, 'storage', 'data', 'notes.txt'); assert.equal(await readFile(firstPath, 'utf8'), 'first version');
   await upload(run, 'notes.txt', 'second version', true);
   const versions = await request<{ data: Array<{ id: string }> }>(run, `/files/${original.id}/versions`); assert.equal(versions.body.data.length, 1);
+  assert.equal('storedPath' in versions.body.data[0], false);
   const restored = await json(run, `/versions/${versions.body.data[0].id}/restore`, 'POST', {}); assert.equal(restored.response.status, 200);
-  assert.equal((await (await import('node:fs/promises')).readFile(firstPath, 'utf8')), 'first version');
+  assert.equal(await readFile(firstPath, 'utf8'), 'first version');
+});
+
+test('uploads are opaque and accept empty files, unknown extensions, and arbitrary MIME hints', async () => {
+  const run = await boot();
+  const bytes = Uint8Array.from([0, 255, 1, 2, 10, 13, 128, 254]);
+  const binary = await uploadBytes(run, 'payload.anything', bytes, 'application/x-custom; charset=binary');
+  assert.equal(binary.mimeType, 'application/x-custom');
+  assert.deepEqual(new Uint8Array(await readFile(join(run.root, 'storage', 'data', 'payload.anything'))), bytes);
+  const empty = await uploadBytes(run, 'empty-file', new Uint8Array(), '');
+  assert.equal(empty.size, 0);
+  assert.equal((await readFile(join(run.root, 'storage', 'data', 'empty-file'))).byteLength, 0);
+  const invalidMime = await uploadBytes(run, 'header-safe.bin', bytes, 'text/plain\r\nX-Injected: yes');
+  assert.equal(invalidMime.mimeType, 'application/octet-stream');
+  const content = await fetch(`${run.base}/api/files/${invalidMime.id}/content`, { headers: { 'X-Continental-Token': run.token } });
+  assert.equal(content.status, 200);
+  assert.equal(content.headers.get('content-type'), 'application/octet-stream');
+  assert.deepEqual(new Uint8Array(await content.arrayBuffer()), bytes);
+});
+
+test('interrupted chunks remain resumable and a late collision never overwrites the first upload', async () => {
+  const run = await boot();
+  const bytes = Uint8Array.from([1, 2, 3, 4, 5]);
+  const started = await json<{ data: { id: string; chunkSize: number; chunkCount: number; status: string } }>(run, '/uploads', 'POST', { parentPath: '', name: 'resume.bin', size: bytes.length });
+  assert.equal(started.response.status, 201);
+  const short = await request<{ error: { code: string } }>(run, `/uploads/${started.body.data.id}/chunks/0`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': '2' }, body: bytes.slice(0, 2) });
+  assert.equal(short.response.status, 400);
+  const status = await request<{ data: { status: string; receivedChunks: number[] } }>(run, `/uploads/${started.body.data.id}`);
+  assert.equal(status.body.data.status, 'active');
+  assert.equal('tempName' in status.body.data, false);
+  for (let index = 0; index < started.body.data.chunkCount; index++) {
+    const part = bytes.slice(index * started.body.data.chunkSize, Math.min(bytes.length, (index + 1) * started.body.data.chunkSize));
+    if (index === 0) {
+      const streamBody = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(part); controller.close(); } });
+      const streamed = await fetch(`${run.base}/api/uploads/${started.body.data.id}/chunks/${index}`, { method: 'PUT', headers: { 'X-Continental-Token': run.token, 'Content-Type': 'application/octet-stream' }, body: streamBody, duplex: 'half' } as RequestInit & { duplex: 'half' });
+      assert.equal(streamed.status, 200);
+      const streamedBody = await streamed.json() as { data: { tempName?: string } };
+      assert.equal('tempName' in streamedBody.data, false);
+    } else {
+      const result = await request(run, `/uploads/${started.body.data.id}/chunks/${index}`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(part.length) }, body: part });
+      assert.equal(result.response.status, 200);
+    }
+  }
+  const completed = await json<{ data: { node: { name: string } } }>(run, `/uploads/${started.body.data.id}/complete`, 'POST', {});
+  assert.equal(completed.response.status, 201);
+
+  const first = await json<{ data: { id: string; chunkSize: number } }>(run, '/uploads', 'POST', { parentPath: '', name: 'collision.bin', size: 1 });
+  const second = await json<{ data: { id: string; chunkSize: number } }>(run, '/uploads', 'POST', { parentPath: '', name: 'collision.bin', size: 1 });
+  for (const id of [first.body.data.id, second.body.data.id]) {
+    const result = await request(run, `/uploads/${id}/chunks/0`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': '1' }, body: Uint8Array.of(id === first.body.data.id ? 7 : 9) });
+    assert.equal(result.response.status, 200);
+  }
+  assert.equal((await json(run, `/uploads/${first.body.data.id}/complete`, 'POST', {})).response.status, 201);
+  const late = await json<{ error: { code: string } }>(run, `/uploads/${second.body.data.id}/complete`, 'POST', {});
+  assert.equal(late.response.status, 409);
+  assert.equal((await readFile(join(run.root, 'storage', 'data', 'collision.bin')))[0], 7);
+});
+
+test('same-destination completions are serialized and only one upload wins', async () => {
+  const run = await boot();
+  const sessions = await Promise.all([7, 9].map((value) => json<{ data: { id: string; chunkSize: number } }>(run, '/uploads', 'POST', { parentPath: '', name: 'parallel.bin', size: 1 })));
+  await Promise.all(sessions.map((started, index) => request(run, `/uploads/${started.body.data.id}/chunks/0`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': '1' }, body: Uint8Array.of(index ? 9 : 7) })));
+  const completed = await Promise.all(sessions.map((started) => json(run, `/uploads/${started.body.data.id}/complete`, 'POST', {})));
+  assert.equal(completed.filter((result) => result.response.status === 201).length, 1);
+  assert.equal(completed.filter((result) => result.response.status === 409).length, 1);
+  const stored = await readFile(join(run.root, 'storage', 'data', 'parallel.bin'));
+  assert(stored[0] === 7 || stored[0] === 9);
+});
+
+test('starting an upload reconciles a file removed outside the app', async () => {
+  const run = await boot();
+  await upload(run, 'reappearing.txt', 'old');
+  await rm(join(run.root, 'storage', 'data', 'reappearing.txt'));
+  const replacement = await upload(run, 'reappearing.txt', 'new');
+  assert.equal(replacement.name, 'reappearing.txt');
+  assert.equal(await readFile(join(run.root, 'storage', 'data', 'reappearing.txt'), 'utf8'), 'new');
+});
+
+test('concurrent folder creation returns one success and clean conflicts', async () => {
+  const run = await boot();
+  const attempts = await Promise.all(Array.from({ length: 4 }, () => json(run, '/files/folder', 'POST', { parentPath: '', name: 'shared-folder' })));
+  assert.equal(attempts.filter((attempt) => attempt.response.status === 201).length, 1);
+  assert.equal(attempts.filter((attempt) => attempt.response.status === 409).length, 3);
+  const listing = await request<{ data: { items: Array<{ name: string; isDirectory: boolean }> } }>(run, '/files');
+  assert.equal(listing.body.data.items.filter((item) => item.name === 'shared-folder' && item.isDirectory).length, 1);
+});
+
+test('sync upload idempotency is payload-bound and never returns private staging names', async () => {
+  const run = await boot();
+  const deviceId = randomUUID();
+  await json(run, '/sync/devices', 'POST', { deviceId, name: 'Idempotent device', platform: 'test', clientVersion: 'test' });
+  const syncJson = async (body: unknown) => {
+    const response = await fetch(`${run.base}/api/sync/uploads`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Continental-Token': run.token, 'X-Continental-Device': deviceId }, body: JSON.stringify(body) });
+    return { response, body: await response.json() as any };
+  };
+  const input = { parentPath: '', name: 'idempotent.bin', size: 1, mimeType: 'application/octet-stream', idempotencyKey: 'same-operation-key' };
+  const first = await syncJson(input);
+  assert.equal(first.response.status, 201);
+  assert.equal('tempName' in first.body.data, false);
+  const repeat = await syncJson(input);
+  assert.equal(repeat.response.status, 201);
+  assert.equal(repeat.body.data.id, first.body.data.id);
+  assert.equal('tempName' in repeat.body.data, false);
+  const mismatch = await syncJson({ ...input, name: 'different.bin' });
+  assert.equal(mismatch.response.status, 409);
+  const wrongRoute = await json<{ error: { code: string } }>(run, '/uploads', 'POST', { ...input, sync: { deviceId, idempotencyKey: 'wrong-route' } });
+  assert.equal(wrongRoute.response.status, 400);
+});
+
+test('a missing staged file is failed and can be safely retried', async () => {
+  const run = await boot();
+  const started = await json<{ data: { id: string; chunkSize: number } }>(run, '/uploads', 'POST', { parentPath: '', name: 'missing-stage.bin', size: 1 });
+  const chunk = await request(run, `/uploads/${started.body.data.id}/chunks/0`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': '1' }, body: Uint8Array.of(1) });
+  assert.equal(chunk.response.status, 200);
+  await rm(join(run.root, 'storage', '.continental', 'temp', `${started.body.data.id}.part`), { force: true });
+  const complete = await json<{ error: { code: string } }>(run, `/uploads/${started.body.data.id}/complete`, 'POST', {});
+  assert.equal(complete.response.status, 409);
+  const status = await request<{ data: { status: string } }>(run, `/uploads/${started.body.data.id}`);
+  assert.equal(status.body.data.status, 'failed');
+  const cancelled = await request(run, `/uploads/${started.body.data.id}`, { method: 'DELETE' });
+  assert.equal(cancelled.response.status, 200);
+});
+
+test('Unicode names use filesystem byte limits and protect reserved storage names', async () => {
+  const run = await boot();
+  const valid = await uploadBytes(run, 'café-🛰️.bin', Uint8Array.of(4), 'application/octet-stream');
+  assert.equal(valid.name, 'café-🛰️.bin');
+  const tooLong = await json<{ error: { code: string } }>(run, '/uploads', 'POST', { parentPath: '', name: '😀'.repeat(70) + '.bin', size: 0 });
+  assert.equal(tooLong.response.status, 400);
+  const internal = await json<{ error: { code: string } }>(run, '/uploads', 'POST', { parentPath: '', name: '.CONTINENTAL', size: 0 });
+  assert.equal(internal.response.status, 403);
 });
 
 test('rename, copy, trash and restore keep paths recoverable', async () => {
@@ -66,6 +208,34 @@ test('collisions are explicit and reconciliation notices external files', async 
   const search = await request<{ data: Array<{ name: string }> }>(run, '/search?q=outside-added'); assert.equal(search.body.data[0].name, 'outside-added.md');
 });
 
+test('trash preserves an external replacement and restores the original beside it', async () => {
+  const run = await boot(); const original = await upload(run, 'same.txt', 'old content');
+  const deleted = await request<{ data: { trashId: string } }>(run, `/files/${original.id}`, { method: 'DELETE' });
+  assert.equal(deleted.response.status, 200);
+  await writeFile(join(run.root, 'storage', 'data', 'same.txt'), 'new external content');
+  const reconciled = await json<{ data: { indexed: number } }>(run, '/storage/reconcile', 'POST', {}); assert.equal(reconciled.response.status, 200);
+  const listing = await request<{ data: { items: Array<{ id: string; name: string }> } }>(run, '/files');
+  const replacement = listing.body.data.items.find((item) => item.name === 'same.txt'); assert(replacement); assert.notEqual(replacement.id, original.id);
+  assert.equal(await readFile(join(run.root, 'storage', 'data', 'same.txt'), 'utf8'), 'new external content');
+  const trash = await request<{ data: Array<{ id: string; originalPath: string; node: { relativePath: string } }> }>(run, '/trash');
+  assert.equal(trash.body.data.length, 1); assert.equal(trash.body.data[0].node.relativePath, 'same.txt');
+  const trashSearch = await request<{ data: Array<{ relativePath: string }> }>(run, '/search?q=&trash=true');
+  assert.equal(trashSearch.body.data[0].relativePath, 'same.txt');
+  const restored = await json<{ data: { relativePath: string } }>(run, `/trash/${deleted.body.data.trashId}/restore`, 'POST', {});
+  assert.equal(restored.body.data.relativePath, 'same (1).txt');
+  assert.equal(await readFile(join(run.root, 'storage', 'data', 'same (1).txt'), 'utf8'), 'old content');
+});
+
+test('file ranges and HEAD responses follow HTTP semantics', async () => {
+  const run = await boot(); const file = await uploadBytes(run, 'range.bin', Uint8Array.from([1, 2, 3, 4, 5]), 'application/octet-stream');
+  const suffix = await fetch(`${run.base}/api/files/${file.id}/content`, { headers: { 'X-Continental-Token': run.token, Range: 'bytes=-2' } });
+  assert.equal(suffix.status, 206); assert.equal(suffix.headers.get('content-range'), 'bytes 3-4/5'); assert.deepEqual([...new Uint8Array(await suffix.arrayBuffer())], [4, 5]);
+  const clamped = await fetch(`${run.base}/api/files/${file.id}/content`, { headers: { 'X-Continental-Token': run.token, Range: 'bytes=1-999' } });
+  assert.equal(clamped.status, 206); assert.equal(clamped.headers.get('content-range'), 'bytes 1-4/5'); assert.deepEqual([...new Uint8Array(await clamped.arrayBuffer())], [2, 3, 4, 5]);
+  const head = await fetch(`${run.base}/api/files/${file.id}/download`, { method: 'HEAD', headers: { 'X-Continental-Token': run.token } });
+  assert.equal(head.status, 200); assert.equal(head.headers.get('content-length'), '5'); assert.equal((await head.arrayBuffer()).byteLength, 0);
+});
+
 test('search filters, sync changes, archive downloads, and retention stay index-backed', async () => {
   const run = await boot(); const original = await upload(run, 'field-log.txt', 'one'); await upload(run, 'field-log.txt', 'two', true); await upload(run, 'field-log.txt', 'three', true); await upload(run, 'field-log.txt', 'four', true);
   const versions = await request<{ data: Array<{ id: string }> }>(run, `/files/${original.id}/versions`); assert.equal(versions.body.data.length, 2);
@@ -79,6 +249,15 @@ test('a missing identity is treated as offline, never as an empty mount', async 
   const root = await mkdtemp(join(tmpdir(), 'continental-cloud-offline-')); const storagePath = join(root, 'mount'); await mkdir(storagePath);
   const storage = new Storage({ storagePath, expectedStorageId: 'known-id', allowStorageInitialization: false, host: '127.0.0.1', port: 1, authToken: 'x', authDisabled: false, maxUploadBytes: 1, uploadChunkBytes: 1, versionRetention: 1, trashRetentionDays: 1, minFreeBytes: 1, appVersion: 'test', environment: 'production' });
   const status = await storage.initialize(); assert.equal(status.state, 'offline'); assert.equal(await (async () => { try { await (await import('node:fs/promises')).lstat(join(storagePath, '.continental', 'storage-id')); return true; } catch { return false; } })(), false); await rm(root, { recursive: true, force: true });
+});
+
+test('storage refuses a symlinked managed directory before creating any layout', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'continental-cloud-layout-')); const storagePath = join(root, 'mount'); const outside = join(root, 'outside');
+  await mkdir(storagePath); await mkdir(outside); await symlink(outside, join(storagePath, 'data'));
+  const storage = new Storage({ storagePath, allowStorageInitialization: true, host: '127.0.0.1', port: 1, authToken: 'x', authDisabled: false, maxUploadBytes: 1, uploadChunkBytes: 1, versionRetention: 1, trashRetentionDays: 1, minFreeBytes: 1, appVersion: 'test', environment: 'production' });
+  const status = await storage.initialize(); assert.equal(status.state, 'misconfigured');
+  await assert.rejects(() => lstat(join(outside, 'should-not-exist')), { code: 'ENOENT' });
+  await rm(root, { recursive: true, force: true });
 });
 
 test('health stays observable while storage is degraded and writes are blocked', async () => {

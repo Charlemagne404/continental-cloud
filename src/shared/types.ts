@@ -52,6 +52,8 @@ export interface UploadSession {
   name: string;
   mimeType: string | null;
   size: number;
+  /** Whether completion may replace a file that appeared after the session started. */
+  overwrite: boolean;
   chunkSize: number;
   chunkCount: number;
   receivedChunks: number[];

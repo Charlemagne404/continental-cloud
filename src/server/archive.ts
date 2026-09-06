@@ -1,5 +1,5 @@
-import { createReadStream } from 'node:fs';
-import { lstat, readdir } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, open, readdir } from 'node:fs/promises';
 import { basename, join, posix } from 'node:path';
 import type { ServerResponse } from 'node:http';
 import { fail } from './errors.js';
@@ -14,7 +14,7 @@ export async function streamTar(response: ServerResponse, source: string, name: 
     'Cache-Control': 'no-store',
   });
   await append(response, source, safeArchivePath(name));
-  response.end(Buffer.alloc(BLOCK * 2));
+  if (!response.destroyed && !response.writableEnded) response.end(Buffer.alloc(BLOCK * 2));
 }
 
 async function append(response: ServerResponse, source: string, archivePath: string): Promise<void> {
@@ -26,10 +26,16 @@ async function append(response: ServerResponse, source: string, archivePath: str
     return;
   }
   if (!info.isFile()) return;
-  await write(response, header(archivePath, info.size, info.mtime, '0'));
-  for await (const chunk of createReadStream(source)) await write(response, Buffer.from(chunk));
-  const remainder = info.size % BLOCK;
-  if (remainder) await write(response, Buffer.alloc(BLOCK - remainder));
+  const noFollow = (constants as typeof constants & { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
+  const handle = await open(source, constants.O_RDONLY | noFollow);
+  try {
+    const diskInfo = await handle.stat();
+    if (!diskInfo.isFile()) return;
+    await write(response, header(archivePath, diskInfo.size, diskInfo.mtime, '0'));
+    for await (const chunk of handle.createReadStream({ autoClose: false })) await write(response, Buffer.from(chunk));
+    const remainder = diskInfo.size % BLOCK;
+    if (remainder) await write(response, Buffer.alloc(BLOCK - remainder));
+  } finally { await handle.close().catch(() => undefined); }
 }
 
 function safeArchivePath(input: string): string {
@@ -53,4 +59,16 @@ function header(name: string, size: number, mtime: Date, type: '0' | '5'): Buffe
 }
 function put(target: Buffer, value: string, offset: number, length: number): void { Buffer.from(value).copy(target, offset, 0, length); }
 function octal(target: Buffer, value: number, offset: number, length: number): void { const text = value.toString(8).padStart(length - 1, '0'); target.write(`${text}\0`, offset, length, 'ascii'); }
-function write(response: ServerResponse, chunk: Buffer): Promise<void> { return response.write(chunk) ? Promise.resolve() : new Promise((resolve) => response.once('drain', resolve)); }
+function write(response: ServerResponse, chunk: Buffer): Promise<void> {
+  if (response.destroyed || response.writableEnded) return Promise.reject(new Error('The archive client disconnected.'));
+  try {
+    if (response.write(chunk)) return Promise.resolve();
+  } catch (error) { return Promise.reject(error); }
+  return new Promise((resolve, reject) => {
+    const cleanup = () => { response.off('drain', onDrain); response.off('close', onClose); response.off('error', onError); };
+    const onDrain = () => { cleanup(); resolve(); };
+    const onClose = () => { cleanup(); reject(new Error('The archive client disconnected.')); };
+    const onError = (error: Error) => { cleanup(); reject(error); };
+    response.once('drain', onDrain); response.once('close', onClose); response.once('error', onError);
+  });
+}

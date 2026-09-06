@@ -1,3 +1,6 @@
+import { dedupeUploadFolders, dedupeUploadPlans, droppedSelection, normalizeUploadPath, toUploadPlans, uploadParent, validateUploadSelection } from './upload-selection.js';
+import type { UploadPlan } from './upload-selection.js';
+
 type FileItem = {
   id: string;
   relativePath: string;
@@ -15,8 +18,8 @@ type FileItem = {
   previewable?: boolean;
 };
 type View = 'drive' | 'recent' | 'favorites' | 'activity' | 'sync' | 'operations' | 'trash' | 'search';
-type UploadPlan = { file: File; relativePath: string };
-type UploadRecord = { localId: string; file: File; relativePath: string; parentPath: string; id?: string; progress: number; state: 'uploading' | 'error' | 'complete'; error?: string; controller?: AbortController };
+type UploadSession = { id: string; parentPath: string; name: string; mimeType: string | null; size: number; overwrite: boolean; chunkSize: number; chunkCount: number; receivedChunks: number[]; status: 'active' | 'failed' | 'complete' | 'cancelled'; resultNodeId?: string };
+type UploadRecord = { localId: string; file: File; relativePath: string; parentPath: string; replace: boolean; id?: string; progress: number; state: 'queued' | 'uploading' | 'error' | 'complete'; error?: string; controller?: AbortController; cancelRequested?: boolean };
 type Notice = { message: string; tone: 'warning' | 'error' | 'info' };
 type OfflineOperation = { method: 'POST' | 'PATCH' | 'DELETE'; path: string; body?: unknown; label: string };
 type PageData = { path: string; items: FileItem[]; hasMore: boolean; offset: number; limit: number; nextOffset: number | null };
@@ -84,10 +87,20 @@ const state = {
   offlineCache: localStorage.getItem('cloud-offline-cache') === 'true',
 };
 const SNAPSHOT_PREFIX = 'continental-cloud-snapshot:';
+const MAX_PARALLEL_UPLOADS = 3;
+let activeUploadCount = 0;
 let pairingPoll: number | undefined;
 let installerPoll: number | undefined;
 let activePairing: PairingView | undefined;
 let activityTimer: number | undefined;
+type ViewRequest = { generation: number; controller: AbortController };
+let viewRequestGeneration = 0;
+let activeViewController: AbortController | undefined;
+let suggestionGeneration = 0;
+let suggestionController: AbortController | undefined;
+let healthGeneration = 0;
+let healthController: AbortController | undefined;
+let offlineFlushPromise: Promise<void> | undefined;
 
 class Api {
   private token(): string | null { return sessionStorage.getItem('continental-cloud-token'); }
@@ -95,7 +108,12 @@ class Api {
     const headers = new Headers(init.headers);
     const token = this.token();
     if (token) headers.set('X-Continental-Token', token);
-    const response = await fetch('/api' + path, { ...init, headers, credentials: 'same-origin' });
+    let response: Response;
+    try { response = await fetch('/api' + path, { ...init, headers, credentials: 'same-origin' }); }
+    catch (error) {
+      if ((error as { name?: string }).name === 'AbortError') throw error;
+      throw Object.assign(new Error('The connection was interrupted. Your upload can be retried.'), { cause: error });
+    }
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw Object.assign(new Error(body.error?.message ?? 'Request failed (' + response.status + ')'), { status: response.status, code: body.error?.code });
     return body.data as T;
@@ -111,11 +129,13 @@ class Api {
     }
     return response.blob();
   }
-  json<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
-    return this.request<T>(path, body === undefined ? { method } : { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  json<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
+    return this.request<T>(path, body === undefined ? { method, signal } : { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal });
   }
   async chunk<T>(path: string, data: Blob, signal: AbortSignal): Promise<T> {
-    return this.request<T>(path, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(data.size) }, body: data, signal });
+    // Content-Length is a forbidden browser-controlled header. The Blob body
+    // already carries its exact length when the user agent sends the request.
+    return this.request<T>(path, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: data, signal });
   }
 }
 const api = new Api();
@@ -262,6 +282,12 @@ function setFileListSemantics(kind: 'files' | 'region', label: string): void {
 }
 
 async function refresh(): Promise<void> {
+  const request = beginViewRequest();
+  const view = state.view;
+  const path = state.path;
+  const sort = state.sort;
+  const direction = state.direction;
+  const search = state.lastSearch;
   window.clearTimeout(state.syncRefreshTimer);
   loading.hidden = false;
   fileList.replaceChildren();
@@ -276,38 +302,44 @@ async function refresh(): Promise<void> {
   try {
     if (state.view === 'drive') {
       const params = new URLSearchParams({ path: state.path, sort: state.sort, direction: state.direction, limit: '100', offset: '0' });
-      const data = await api.request<PageData>('/files?' + params);
+      const data = await api.request<PageData>('/files?' + params, { signal: request.controller.signal });
+      if (!isCurrentViewRequest(request)) return;
       state.items = data.items;
       state.hasMore = data.hasMore;
       state.nextOffset = data.nextOffset ?? data.offset + data.items.length;
       renderBreadcrumbs();
-      saveSnapshot(snapshotKey(), state.items);
+      saveSnapshot(snapshotKey(view, path), state.items);
     } else if (state.view === 'recent') {
-      state.items = await api.request<FileItem[]>('/recent');
-      saveSnapshot(snapshotKey(), state.items);
+      state.items = await api.request<FileItem[]>('/recent', { signal: request.controller.signal });
+      if (!isCurrentViewRequest(request)) return;
+      saveSnapshot(snapshotKey(view, path), state.items);
     } else if (state.view === 'favorites') {
-      state.items = await api.request<FileItem[]>('/favorites');
-      saveSnapshot(snapshotKey(), state.items);
+      state.items = await api.request<FileItem[]>('/favorites', { signal: request.controller.signal });
+      if (!isCurrentViewRequest(request)) return;
+      saveSnapshot(snapshotKey(view, path), state.items);
     } else if (state.view === 'search') {
-      if (state.lastSearch) await runSearch(state.lastSearch, false);
+      if (search) await runSearch(search, false, request);
       else state.items = [];
     } else if (state.view === 'trash') {
-      const trash = await api.request<Array<{ id: string; originalPath: string; deletedAt: string; node: FileItem }>>('/trash');
+      const trash = await api.request<Array<{ id: string; originalPath: string; deletedAt: string; node: FileItem }>>('/trash', { signal: request.controller.signal });
+      if (!isCurrentViewRequest(request)) return;
       state.items = trash.map((entry) => ({ ...entry.node, id: entry.id, relativePath: entry.originalPath, modifiedAt: entry.deletedAt }));
     } else if (state.view === 'activity') {
-      await renderActivity();
+      await renderActivity(request);
       return;
     } else if (state.view === 'sync') {
-      await renderSync();
+      await renderSync(request);
       return;
     } else if (state.view === 'operations') {
-      await renderOperations();
+      await renderOperations(request);
       return;
     }
+    if (!isCurrentViewRequest(request)) return;
     state.notice = null;
     renderItems();
   } catch (error: any) {
-    const cached = state.view === 'drive' || state.view === 'recent' || state.view === 'favorites' ? readSnapshot(snapshotKey()) : null;
+    if (!isCurrentViewRequest(request) || error?.name === 'AbortError') return;
+    const cached = view === 'drive' || view === 'recent' || view === 'favorites' ? readSnapshot(snapshotKey(view, path)) : null;
     if (cached) {
       state.items = cached;
       state.notice = { message: 'Showing the last saved list from this browser. It may be out of date.', tone: 'warning' };
@@ -319,26 +351,49 @@ async function refresh(): Promise<void> {
       renderItems();
     }
   } finally {
-    loading.hidden = true;
-    renderStatusBanner();
+    if (isCurrentViewRequest(request)) {
+      loading.hidden = true;
+      renderStatusBanner();
+      finishViewRequest(request);
+    }
   }
 }
 
 async function loadMore(): Promise<void> {
   if (state.view !== 'drive' || !state.hasMore || state.loadingMore) return;
+  const generation = viewRequestGeneration;
+  const controller = activeViewController;
+  const view = state.view;
+  const path = state.path;
+  const sort = state.sort;
+  const direction = state.direction;
   state.loadingMore = true;
   const button = pagination.querySelector('button');
   if (button) { button.disabled = true; button.textContent = 'Loading…'; }
   try {
-    const params = new URLSearchParams({ path: state.path, sort: state.sort, direction: state.direction, limit: '100', offset: String(state.nextOffset) });
-    const data = await api.request<PageData>('/files?' + params);
+    const params = new URLSearchParams({ path, sort, direction, limit: '100', offset: String(state.nextOffset) });
+    const data = await api.request<PageData>('/files?' + params, controller ? { signal: controller.signal } : {});
+    if (generation !== viewRequestGeneration || state.view !== view || state.path !== path || state.sort !== sort || state.direction !== direction) return;
     state.items.push(...data.items);
     state.hasMore = data.hasMore;
     state.nextOffset = data.nextOffset ?? data.offset + data.items.length;
-    saveSnapshot(snapshotKey(), state.items);
+    saveSnapshot(snapshotKey(view, path), state.items);
     renderItems();
-  } catch (error) { handleError(error); }
+  } catch (error: any) { if (error?.name !== 'AbortError' && generation === viewRequestGeneration) handleError(error); }
   finally { state.loadingMore = false; }
+}
+
+function beginViewRequest(): ViewRequest {
+  activeViewController?.abort();
+  const controller = new AbortController();
+  activeViewController = controller;
+  return { generation: ++viewRequestGeneration, controller };
+}
+function isCurrentViewRequest(request: ViewRequest): boolean {
+  return request.generation === viewRequestGeneration && activeViewController === request.controller && !request.controller.signal.aborted;
+}
+function finishViewRequest(request: ViewRequest): void {
+  if (activeViewController === request.controller) activeViewController = undefined;
 }
 
 function renderItems(): void {
@@ -405,9 +460,10 @@ function renderCard(item: FileItem): HTMLElement {
     card.addEventListener('dragover', (event) => event.preventDefault());
     card.addEventListener('drop', (event) => {
       event.preventDefault();
+      event.stopPropagation();
       const id = event.dataTransfer?.getData('application/x-continental-node');
       if (id) void moveNodes([id], item.relativePath);
-      else if (event.dataTransfer) void uploadDropped(event.dataTransfer, item.relativePath);
+      else if (event.dataTransfer && hasUploadPayload(event.dataTransfer)) void uploadDropped(event.dataTransfer, item.relativePath);
     });
   }
   card.addEventListener('click', (event) => selectItem(item, event));
@@ -593,8 +649,9 @@ async function assignTags(item: FileItem): Promise<void> {
   } catch (error) { handleError(error); }
 }
 
-async function renderActivity(): Promise<void> {
-  const events = await api.request<Activity[]>('/activity');
+async function renderActivity(request: ViewRequest): Promise<void> {
+  const events = await api.request<Activity[]>('/activity', { signal: request.controller.signal });
+  if (!isCurrentViewRequest(request)) return;
   const query = (state.searchFilters.activity ?? '').toLowerCase();
   const filtered = events.filter((event) => !query || (event.action + ' ' + (event.path ?? '') + ' ' + (event.detail ?? '')).toLowerCase().includes(query));
   state.items = [];
@@ -614,7 +671,7 @@ async function renderActivity(): Promise<void> {
   input.placeholder = 'Action, device, or file';
   input.setAttribute('aria-label', 'Filter activity by action, device, or file');
   input.value = state.searchFilters.activity ?? '';
-  input.addEventListener('input', () => { state.searchFilters.activity = input.value; void renderActivity(); });
+  input.addEventListener('input', () => { state.searchFilters.activity = input.value; void refresh(); });
   label.append(input);
   tools.append(label);
   for (const event of filtered) {
@@ -651,11 +708,12 @@ async function renderActivity(): Promise<void> {
   }
   updateLabels();
   window.clearTimeout(activityTimer);
-  activityTimer = window.setTimeout(() => { if (state.view === 'activity') void renderActivity(); }, 15_000);
+  activityTimer = window.setTimeout(() => { if (state.view === 'activity') void refresh(); }, 15_000);
 }
 
-async function renderSync(): Promise<void> {
-  const [devices, conflicts] = await Promise.all([api.request<SyncDeviceView[]>('/sync/devices'), api.request<ConflictView[]>('/sync/conflicts')]);
+async function renderSync(request: ViewRequest): Promise<void> {
+  const [devices, conflicts] = await Promise.all([api.request<SyncDeviceView[]>('/sync/devices', { signal: request.controller.signal }), api.request<ConflictView[]>('/sync/conflicts', { signal: request.controller.signal })]);
+  if (!isCurrentViewRequest(request)) return;
   state.items = [];
   setFileListSemantics('region', 'Sync devices and conflicts');
   fileList.className = 'sync-panel';
@@ -1002,8 +1060,9 @@ function metric(label: string, value: string): HTMLElement {
   row.append(name, valueNode);
   return row;
 }
-async function renderOperations(): Promise<void> {
-  const data = await api.request<OperationsData>('/operations');
+async function renderOperations(request: ViewRequest): Promise<void> {
+  const data = await api.request<OperationsData>('/operations', { signal: request.controller.signal });
+  if (!isCurrentViewRequest(request)) return;
   state.items = [];
   setFileListSemantics('region', 'Recovery operations');
   fileList.className = 'operations-panel';
@@ -1313,100 +1372,181 @@ async function versions(item: FileItem): Promise<void> {
 
 async function uploadFiles(files: FileList | File[], replace = false): Promise<void> { return uploadFilesAt(toUploadPlans(files, false), state.path, replace); }
 async function uploadFolder(files: FileList | File[]): Promise<void> { return uploadFilesAt(toUploadPlans(files, true), state.path, false); }
-async function uploadFilesAt(plans: UploadPlan[], parentPath: string, replace = false): Promise<void> {
-  if (!plans.length) return toast('That folder did not contain any files.', true);
+async function uploadFilesAt(plans: UploadPlan[], parentPath: string, replace = false, folderPaths: string[] = []): Promise<void> {
+  if (!plans.length && !folderPaths.length) return toast('That folder did not contain any files.', true);
   try {
-    const safePlans = plans.map((plan) => ({ ...plan, relativePath: normalizeUploadPath(plan.relativePath) }));
-    await ensureUploadFolders(safePlans, parentPath);
-    for (const plan of safePlans) {
-      const record: UploadRecord = { localId: crypto.randomUUID(), file: plan.file, relativePath: plan.relativePath, parentPath: uploadJoin(parentPath, uploadParent(plan.relativePath)), progress: 0, state: 'uploading' };
-      state.uploads.push(record);
-      renderUploads();
-      void uploadFile(record, replace);
-    }
-    toast(safePlans.length + ' file' + (safePlans.length === 1 ? '' : 's') + ' queued from the folder.');
+    const safePlans = dedupeUploadPlans(plans.map((plan) => ({ ...plan, relativePath: normalizeUploadPath(plan.relativePath) })));
+    const safeFolders = dedupeUploadFolders(folderPaths.map((folder) => normalizeUploadPath(folder)));
+    validateUploadSelection(safePlans, safeFolders);
+    await ensureUploadFolders(safePlans, parentPath, safeFolders);
+    if (!safePlans.length && safeFolders.length) await refresh();
+    state.uploads.push(...safePlans.map((plan): UploadRecord => ({ localId: crypto.randomUUID(), file: plan.file, relativePath: plan.relativePath, parentPath: uploadJoin(parentPath, uploadParent(plan.relativePath)), replace, progress: 0, state: 'queued' })));
+    renderUploads();
+    pumpUploads();
+    const uploaded = safePlans.length ? safePlans.length + ' file' + (safePlans.length === 1 ? '' : 's') + ' queued for upload.' : '';
+    const created = safeFolders.length ? safeFolders.length + ' folder' + (safeFolders.length === 1 ? '' : 's') + ' added.' : '';
+    toast([uploaded, created].filter(Boolean).join(' '));
   } catch (error) { handleError(error); }
 }
-function toUploadPlans(files: FileList | File[], preservePaths: boolean): UploadPlan[] {
-  return Array.from(files).map((file) => ({ file, relativePath: preservePaths ? ((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name) : file.name }));
-}
-async function ensureUploadFolders(plans: UploadPlan[], rootPath: string): Promise<void> {
+async function ensureUploadFolders(plans: UploadPlan[], rootPath: string, explicitFolders: string[] = []): Promise<void> {
   const folders = new Set<string>();
+  for (const folder of explicitFolders) {
+    const parts = folder.split('/');
+    for (let index = 1; index <= parts.length; index++) folders.add(parts.slice(0, index).join('/'));
+  }
   for (const plan of plans) {
     const parts = plan.relativePath.split('/').slice(0, -1);
     for (let index = 1; index <= parts.length; index++) folders.add(parts.slice(0, index).join('/'));
   }
-  for (const folder of [...folders].sort((left, right) => left.split('/').length - right.split('/').length)) {
+  const listings = new Map<string, Map<string, FileItem>>();
+  const listingFor = async (path: string, refresh = false): Promise<Map<string, FileItem>> => {
+    if (!refresh && listings.has(path)) return listings.get(path)!;
+    const entries = new Map((await listUploadFolder(path)).map((item) => [item.name, item]));
+    listings.set(path, entries);
+    return entries;
+  };
+  for (const folder of dedupeUploadFolders([...folders]).sort((left, right) => left.split('/').length - right.split('/').length || left.localeCompare(right))) {
     const parentPath = uploadJoin(rootPath, uploadParent(folder));
     const name = folder.split('/').at(-1)!;
-    const listing = await api.request<PageData>('/files?path=' + encodeURIComponent(parentPath) + '&limit=250&offset=0');
-    const existing = listing.items.find((item) => item.name === name);
+    const listing = await listingFor(parentPath);
+    const existing = listing.get(name);
     if (existing) {
       if (!existing.isDirectory) throw new Error('Cannot create folder ' + folder + ': a file already has that name.');
-    } else await api.json('/files/folder', 'POST', { parentPath, name });
+    } else {
+      try {
+        const created = await api.json<FileItem>('/files/folder', 'POST', { parentPath, name });
+        listing.set(name, created);
+      } catch (error: any) {
+        if (error?.status !== 409) throw error;
+        const raced = (await listingFor(parentPath, true)).get(name);
+        if (!raced?.isDirectory) throw new Error('Cannot create folder ' + folder + ': a file already has that name.');
+      }
+    }
   }
 }
-function normalizeUploadPath(value: string): string {
-  const parts = value.replaceAll('\\', '/').split('/').filter(Boolean);
-  if (!parts.length || parts.some((part) => part === '.' || part === '..' || part.includes('\0'))) throw new Error('Unsafe folder entry: ' + value);
-  return parts.join('/');
+async function listUploadFolder(path: string): Promise<FileItem[]> {
+  const items: FileItem[] = [];
+  let offset = 0;
+  for (;;) {
+    const page = await api.request<PageData>('/files?path=' + encodeURIComponent(path) + '&limit=250&offset=' + offset);
+    items.push(...page.items);
+    if (!page.hasMore || !page.items.length) return items;
+    offset += page.items.length;
+  }
 }
-function uploadParent(path: string): string { const index = path.lastIndexOf('/'); return index === -1 ? '' : path.slice(0, index); }
 function uploadJoin(left: string, right: string): string { return [left, right].filter(Boolean).join('/'); }
-type BrowserFileEntry = { isFile: boolean; isDirectory: boolean; name: string; file?: (success: (file: File) => void, error?: () => void) => void; createReader?: () => BrowserDirectoryReader };
-type BrowserDirectoryReader = { readEntries: (success: (entries: BrowserFileEntry[]) => void, error?: () => void) => void };
+function hasUploadPayload(dataTransfer: DataTransfer): boolean {
+  return Array.from(dataTransfer.items ?? []).some((item) => item.kind === 'file') || dataTransfer.files.length > 0;
+}
 async function uploadDropped(dataTransfer: DataTransfer, parentPath: string): Promise<void> {
-  try { await uploadFilesAt(await droppedPlans(dataTransfer), parentPath); }
+  try {
+    const selection = await droppedSelection(dataTransfer);
+    await uploadFilesAt(selection.plans, parentPath, false, selection.folders);
+  }
   catch (error) { handleError(error); }
 }
-async function droppedPlans(dataTransfer: DataTransfer): Promise<UploadPlan[]> {
-  const entries: BrowserFileEntry[] = [];
-  for (const item of Array.from(dataTransfer.items ?? [])) {
-    const entry = (item as unknown as { webkitGetAsEntry?: () => BrowserFileEntry | null }).webkitGetAsEntry?.();
-    if (entry) entries.push(entry);
-  }
-  if (entries.length) return (await Promise.all(entries.map((entry) => walkDropEntry(entry)))).flat();
-  return toUploadPlans(dataTransfer.files, true);
+function uploadAbortError(): Error { const error = new Error('Upload cancelled.'); error.name = 'AbortError'; return error; }
+function uploadProgress(session: UploadSession, received: Set<number>): number {
+  const completed = [...received].reduce((total, index) => total + Math.max(0, Math.min(session.chunkSize, session.size - index * session.chunkSize)), 0);
+  return session.size === 0 ? (received.has(0) ? 1 : 0) : Math.min(1, completed / session.size);
 }
-async function walkDropEntry(entry: BrowserFileEntry, prefix = ''): Promise<UploadPlan[]> {
-  const path = prefix ? prefix + '/' + entry.name : entry.name;
-  if (entry.isFile && entry.file) return [{ file: await new Promise<File>((resolve, reject) => entry.file!(resolve, reject)), relativePath: path }];
-  if (!entry.isDirectory || !entry.createReader) return [];
-  const children: BrowserFileEntry[] = [];
-  const reader = entry.createReader();
-  for (;;) {
-    const batch = await new Promise<BrowserFileEntry[]>((resolve, reject) => reader.readEntries(resolve, reject));
-    if (!batch.length) break;
-    children.push(...batch);
+function uploadRetryable(error: any): boolean {
+  const status = typeof error?.status === 'number' ? error.status : undefined;
+  return status === undefined || status === 408 || status === 425 || status === 429 || status >= 500;
+}
+async function waitForUploadRetry(milliseconds: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) throw uploadAbortError();
+  await new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(resolve, milliseconds);
+    signal.addEventListener('abort', () => { window.clearTimeout(timer); reject(uploadAbortError()); }, { once: true });
+  });
+}
+async function uploadChunkWithRetry(path: string, data: Blob, signal: AbortSignal): Promise<UploadSession> {
+  for (let attempt = 0; ; attempt++) {
+    try { return await api.chunk<UploadSession>(path, data, signal); }
+    catch (error) {
+      if (signal.aborted || (error as { name?: string }).name === 'AbortError' || !uploadRetryable(error) || attempt >= 3) throw error;
+      await waitForUploadRetry(250 * 2 ** attempt, signal);
+    }
   }
-  return (await Promise.all(children.map((child) => walkDropEntry(child, path)))).flat();
+}
+async function sessionForUpload(record: UploadRecord, replace: boolean, parentPath: string, signal: AbortSignal): Promise<UploadSession> {
+  const normalizedName = record.relativePath.slice(record.relativePath.lastIndexOf('/') + 1).normalize('NFC');
+  if (record.id) {
+    const previousId = record.id;
+    try {
+      const existing = await api.request<UploadSession>('/uploads/' + previousId, { signal });
+      const sameFile = existing.parentPath === record.parentPath && existing.name === normalizedName && existing.size === record.file.size && existing.overwrite === replace;
+      if (sameFile && existing.status === 'active') return existing;
+      if (sameFile && existing.status === 'complete' && existing.resultNodeId) return existing;
+      record.id = undefined;
+      void api.request('/uploads/' + previousId, { method: 'DELETE' }).catch(() => undefined);
+    } catch (error: any) {
+      if (error?.status !== 404) throw error;
+      record.id = undefined;
+    }
+  }
+  const session = await api.json<UploadSession>('/uploads', 'POST', { parentPath: record.parentPath || parentPath, name: normalizedName, size: record.file.size, mimeType: record.file.type || undefined, overwrite: replace }, signal);
+  record.id = session.id;
+  return session;
 }
 async function uploadFile(record: UploadRecord, replace: boolean, parentPath = state.path): Promise<void> {
+  record.replace = replace;
+  const controller = new AbortController();
+  record.controller = controller;
   try {
-    const session = await api.json<{ id: string; chunkSize: number; chunkCount: number }>('/uploads', 'POST', { parentPath: record.parentPath || parentPath, name: record.file.name, size: record.file.size, mimeType: record.file.type || undefined, overwrite: replace });
-    record.id = session.id;
+    if (record.cancelRequested) throw uploadAbortError();
+    const session = await sessionForUpload(record, replace, parentPath, controller.signal);
+    if (session.status === 'complete' && session.resultNodeId) {
+      record.state = 'complete'; record.progress = 1; toast(record.relativePath + ' is already in your cloud.'); await refresh(); return;
+    }
+    if (session.status !== 'active') {
+      record.id = undefined;
+      return uploadFile(record, replace, parentPath);
+    }
+    const received = new Set(session.receivedChunks);
+    record.progress = uploadProgress(session, received);
+    renderUploads();
     for (let index = 0; index < session.chunkCount; index++) {
-      const controller = new AbortController();
-      record.controller = controller;
+      if (record.cancelRequested) throw uploadAbortError();
+      if (received.has(index)) continue;
       const start = index * session.chunkSize;
-      await api.chunk('/uploads/' + session.id + '/chunks/' + index, record.file.slice(start, Math.min(record.file.size, start + session.chunkSize)), controller.signal);
-      record.progress = (index + 1) / session.chunkCount;
+      const result = await uploadChunkWithRetry('/uploads/' + session.id + '/chunks/' + index, record.file.slice(start, Math.min(record.file.size, start + session.chunkSize)), controller.signal);
+      if (Array.isArray(result.receivedChunks)) result.receivedChunks.forEach((chunk) => received.add(chunk)); else received.add(index);
+      record.progress = uploadProgress(session, received);
       renderUploads();
     }
-    await api.json('/uploads/' + session.id + '/complete', 'POST', {});
+    if (record.cancelRequested) throw uploadAbortError();
+    await api.json('/uploads/' + session.id + '/complete', 'POST', {}, controller.signal);
     record.state = 'complete';
     record.progress = 1;
     toast(record.relativePath + ' is in your cloud.');
     await refresh();
   } catch (error: any) {
-    if (error.name === 'AbortError') { record.state = 'error'; record.error = 'Cancelled'; }
-    else if (error.status === 409 && !replace && confirm('“' + record.relativePath + '” already exists. Replace it and preserve a version?')) { record.state = 'uploading'; record.progress = 0; renderUploads(); await uploadFile(record, true, parentPath); return; }
-    else { record.state = 'error'; record.error = error.message ?? 'Upload failed'; }
+    if (error?.name === 'AbortError' || record.cancelRequested) { record.state = 'error'; record.error = 'Cancelled'; }
+    else if (error?.status === 409 && !replace && confirm('“' + record.relativePath + '” already exists or changed while uploading. Replace it and preserve a version?')) {
+      const previousId = record.id;
+      record.id = undefined;
+      if (previousId) void api.request('/uploads/' + previousId, { method: 'DELETE' }).catch(() => undefined);
+      record.state = 'uploading'; record.progress = 0; record.error = undefined; record.cancelRequested = false; renderUploads(); await uploadFile(record, true, parentPath); return;
+    }
+    else { record.state = 'error'; record.error = error?.message ?? 'Upload failed'; }
     toast(record.relativePath + ': ' + record.error, true);
   } finally {
+    record.controller = undefined;
     renderUploads();
-    if (record.state === 'complete') window.setTimeout(() => { state.uploads = state.uploads.filter((item) => item !== record); renderUploads(); }, 1800);
+    if (record.state === 'complete') window.setTimeout(() => { state.uploads = state.uploads.filter((item) => item !== record); renderUploads(); }, 4000);
   }
+}
+function pumpUploads(): void {
+  while (activeUploadCount < MAX_PARALLEL_UPLOADS) {
+    const record = state.uploads.find((item) => item.state === 'queued');
+    if (!record) break;
+    record.state = 'uploading';
+    activeUploadCount++;
+    void uploadFile(record, record.replace).finally(() => { activeUploadCount--; pumpUploads(); });
+  }
+  renderUploads();
 }
 function renderUploads(): void {
   const dock = $('#upload-dock');
@@ -1418,23 +1558,30 @@ function renderUploads(): void {
     const name = document.createElement('b');
     name.textContent = record.relativePath;
     const button = document.createElement('button');
-    button.textContent = record.state === 'uploading' ? 'Cancel' : record.state === 'error' ? 'Retry' : 'Done';
+    button.textContent = record.state === 'uploading' || record.state === 'queued' ? 'Cancel' : record.state === 'error' ? 'Retry' : 'Done';
     button.disabled = record.state === 'complete';
     button.addEventListener('click', () => {
       if (record.state === 'uploading') {
+        record.cancelRequested = true;
         record.controller?.abort();
         if (record.id) api.request('/uploads/' + record.id, { method: 'DELETE' }).catch(() => undefined);
+      } else if (record.state === 'queued') {
+        record.cancelRequested = true;
+        record.state = 'error';
+        record.error = 'Cancelled';
+        renderUploads();
       } else if (record.state === 'error') {
-        record.state = 'uploading';
+        record.state = 'queued';
         record.progress = 0;
         record.error = undefined;
-        void uploadFile(record, false);
+        record.cancelRequested = false;
+        pumpUploads();
         renderUploads();
       }
     });
     const status = document.createElement('span');
     status.className = 'upload-status';
-    status.textContent = record.state === 'error' ? record.error ?? 'Failed' : Math.round(record.progress * 100) + '%';
+    status.textContent = record.state === 'queued' ? 'Waiting…' : record.state === 'error' ? record.error ?? 'Failed' : Math.round(record.progress * 100) + '%';
     const track = document.createElement('div');
     track.className = 'upload-progress';
     const bar = document.createElement('i');
@@ -1603,6 +1750,8 @@ function renderSearchTools(): void {
 }
 async function renderSearchToolsAsync(): Promise<void> {
   if (state.view !== 'search') return;
+  const search = state.lastSearch;
+  const filterKey = JSON.stringify(state.searchFilters);
   const host = $('#search-tools');
   host.querySelectorAll('.tag-filters, .saved-searches').forEach((node) => node.remove());
   let tags: Tag[];
@@ -1610,10 +1759,10 @@ async function renderSearchToolsAsync(): Promise<void> {
   try {
     [tags, searches] = await Promise.all([api.request<Tag[]>('/tags'), api.request<SavedSearch[]>('/saved-searches')]);
   } catch (error) {
-    handleError(error, false);
+    if (state.view === 'search' && state.lastSearch === search && JSON.stringify(state.searchFilters) === filterKey) handleError(error, false);
     return;
   }
-  if (state.view !== 'search') return;
+  if (state.view !== 'search' || state.lastSearch !== search || JSON.stringify(state.searchFilters) !== filterKey) return;
   const tagHost = document.createElement('div');
   tagHost.className = 'tag-filters';
   const label = document.createElement('span');
@@ -1658,67 +1807,128 @@ async function renderSearchToolsAsync(): Promise<void> {
   savedHost.append(list);
   host.append(savedHost);
 }
-async function runSearch(query: string, refreshTools = true): Promise<void> {
+async function runSearch(query: string, refreshTools = true, providedRequest?: ViewRequest): Promise<void> {
+  const request = providedRequest ?? beginViewRequest();
+  const standalone = !providedRequest;
+  if (standalone) loading.hidden = false;
   state.lastSearch = query;
   state.view = 'search';
   const params = new URLSearchParams({ q: query });
   for (const [key, value] of Object.entries(state.searchFilters)) if (value) params.set(key, value);
+  const filterKey = JSON.stringify(state.searchFilters);
   try {
-    state.items = await api.request<FileItem[]>('/search?' + params);
+    const items = await api.request<FileItem[]>('/search?' + params, { signal: request.controller.signal });
+    if (!isCurrentViewRequest(request) || state.view !== 'search' || state.lastSearch !== query || JSON.stringify(state.searchFilters) !== filterKey) return;
+    state.items = items;
     state.loadError = null;
     if (refreshTools) renderSearchTools();
     renderItems();
-  } catch (error) { state.loadError = (error as Error).message; handleError(error); renderItems(); }
+  } catch (error: any) {
+    if (!isCurrentViewRequest(request) || error?.name === 'AbortError') return;
+    state.loadError = error.message;
+    handleError(error);
+    renderItems();
+  } finally {
+    if (standalone && isCurrentViewRequest(request)) {
+      loading.hidden = true;
+      renderStatusBanner();
+      finishViewRequest(request);
+    }
+  }
 }
 async function showDuplicates(): Promise<void> {
+  const request = beginViewRequest();
+  loading.hidden = false;
   try {
-    const groups = await api.request<Array<{ checksum: string; count: number; bytes: number; items: FileItem[] }>>('/duplicates');
+    const groups = await api.request<Array<{ checksum: string; count: number; bytes: number; items: FileItem[] }>>('/duplicates', { signal: request.controller.signal });
+    if (!isCurrentViewRequest(request)) return;
     state.items = groups.flatMap((group) => group.items);
     state.view = 'search';
     renderSearchTools();
     renderItems();
     toast(groups.length ? groups.length + ' duplicate groups found.' : 'No duplicates with matching content were found.');
-  } catch (error) { handleError(error); }
+  } catch (error: any) { if (error?.name !== 'AbortError' && isCurrentViewRequest(request)) handleError(error); }
+  finally {
+    if (isCurrentViewRequest(request)) {
+      loading.hidden = true;
+      renderStatusBanner();
+      finishViewRequest(request);
+    }
+  }
 }
 async function updateSuggestions(query: string): Promise<void> {
-  if (!query) return;
+  suggestionController?.abort();
+  const controller = new AbortController();
+  suggestionController = controller;
+  const generation = ++suggestionGeneration;
+  if (!query) {
+    ($('#search-suggestions') as HTMLDataListElement).replaceChildren();
+    return;
+  }
   try {
-    const list = await api.request<string[]>('/search/suggestions?q=' + encodeURIComponent(query));
+    const list = await api.request<string[]>('/search/suggestions?q=' + encodeURIComponent(query), { signal: controller.signal });
+    if (generation !== suggestionGeneration || suggestionController !== controller || controller.signal.aborted) return;
     const host = $('#search-suggestions') as HTMLDataListElement;
     host.replaceChildren(...list.map((value) => { const option = document.createElement('option'); option.value = value; return option; }));
-  } catch { /* suggestions are non-essential */ }
+  } catch (error: any) { if (error?.name !== 'AbortError') { /* suggestions are non-essential */ } }
 }
 
 function offlineOperations(): OfflineOperation[] {
   try {
     const value = JSON.parse(localStorage.getItem('continental-offline-operations') ?? '[]');
-    return Array.isArray(value) ? value as OfflineOperation[] : [];
+    return Array.isArray(value) ? value.filter(isOfflineOperation).slice(-100) : [];
   } catch { return []; }
+}
+function isOfflineOperation(value: unknown): value is OfflineOperation {
+  if (!value || typeof value !== 'object') return false;
+  const operation = value as Partial<OfflineOperation>;
+  return (operation.method === 'POST' || operation.method === 'PATCH' || operation.method === 'DELETE')
+    && typeof operation.path === 'string' && /^\/(?:files|trash)(?:\/|$)/.test(operation.path)
+    && typeof operation.label === 'string' && operation.label.length <= 120;
 }
 function queueOffline(operation: OfflineOperation): void {
   const queue = offlineOperations();
   queue.push(operation);
-  localStorage.setItem('continental-offline-operations', JSON.stringify(queue.slice(-100)));
+  try { localStorage.setItem('continental-offline-operations', JSON.stringify(queue.slice(-100))); }
+  catch { toast('This browser could not save the offline change. Reconnect before trying again.', true); return; }
   toast(operation.label + ' queued until you are online.');
   renderStatusBanner();
 }
-async function flushOfflineQueue(): Promise<void> {
+function flushOfflineQueue(): Promise<void> {
+  if (offlineFlushPromise) return offlineFlushPromise;
+  const work = flushOfflineQueueOnce();
+  offlineFlushPromise = work.finally(() => { offlineFlushPromise = undefined; });
+  return offlineFlushPromise;
+}
+async function flushOfflineQueueOnce(): Promise<void> {
   if (!navigator.onLine) return;
   const queue = offlineOperations();
   if (!queue.length) return;
+  const initialRaw = localStorage.getItem('continental-offline-operations');
   const remaining: OfflineOperation[] = [];
+  let applied = 0;
   for (let index = 0; index < queue.length; index++) {
     const operation = queue[index];
-    try { await api.json(operation.path, operation.method, operation.body); }
+    try { await api.json(operation.path, operation.method, operation.body); applied++; }
     catch (error: any) {
       remaining.push(...queue.slice(index));
-      if (error?.status !== 401) toast('Could not apply queued ' + operation.label + ': ' + (error?.message ?? 'unknown error'), true);
+      if (error?.status === 401) showAuth();
+      else toast('Could not apply queued ' + operation.label + ': ' + (error?.message ?? 'unknown error'), true);
       break;
     }
   }
-  localStorage.setItem('continental-offline-operations', JSON.stringify(remaining));
+  const latestRaw = localStorage.getItem('continental-offline-operations');
+  let preservedTail: OfflineOperation[] = [];
+  if (latestRaw === initialRaw) {
+    localStorage.setItem('continental-offline-operations', JSON.stringify(remaining));
+  } else if (latestRaw !== null) {
+    const latest = offlineOperations();
+    const prefixUnchanged = queue.every((operation, index) => JSON.stringify(operation) === JSON.stringify(latest[index]));
+    preservedTail = prefixUnchanged ? latest.slice(queue.length) : latest;
+    localStorage.setItem('continental-offline-operations', JSON.stringify([...remaining, ...preservedTail].slice(-100)));
+  }
   renderStatusBanner();
-  if (!remaining.length) { toast(queue.length + ' queued change' + (queue.length === 1 ? '' : 's') + ' applied.'); await refresh(); }
+  if (!remaining.length && !preservedTail.length && applied) { toast(applied + ' queued change' + (applied === 1 ? '' : 's') + ' applied.'); await refresh(); }
 }
 function clearOfflineQueue(): void {
   if (!offlineOperations().length) return;
@@ -1728,6 +1938,15 @@ function clearOfflineQueue(): void {
   renderStatusBanner();
 }
 async function lockCloud(): Promise<void> {
+  viewRequestGeneration++;
+  activeViewController?.abort();
+  activeViewController = undefined;
+  healthGeneration++;
+  healthController?.abort();
+  healthController = undefined;
+  suggestionGeneration++;
+  suggestionController?.abort();
+  suggestionController = undefined;
   try { await api.request('/session', { method: 'DELETE' }); } catch { /* always clear local private state */ }
   sessionStorage.removeItem('continental-cloud-token');
   localStorage.removeItem('continental-offline-operations');
@@ -1746,9 +1965,14 @@ async function lockCloud(): Promise<void> {
   showAuth();
 }
 async function checkHealth(): Promise<boolean> {
+  healthController?.abort();
+  const controller = new AbortController();
+  healthController = controller;
+  const generation = ++healthGeneration;
   try {
-    const health = await api.request<{ state: string; storage: { state: string; freeBytes?: number; totalBytes?: number; detail?: string }; version: string }>('/health');
-    const storage = await api.request<{ usedBytes: number | null; freeBytes?: number; totalBytes?: number; state: 'ready' | 'offline' | 'misconfigured'; detail?: string; warnings?: string[] }>('/storage');
+    const health = await api.request<{ state: string; storage: { state: string; freeBytes?: number; totalBytes?: number; detail?: string }; version: string }>('/health', { signal: controller.signal });
+    const storage = await api.request<{ usedBytes: number | null; freeBytes?: number; totalBytes?: number; state: 'ready' | 'offline' | 'misconfigured'; detail?: string; warnings?: string[] }>('/storage', { signal: controller.signal });
+    if (generation !== healthGeneration || healthController !== controller || controller.signal.aborted) return false;
     state.connectionState = storage.state;
     state.storageWarning = storage.warnings?.[0] ?? (storage.state === 'ready' ? '' : health.storage.detail ?? storage.detail ?? 'Storage unavailable.');
     const ready = health.state === 'ready' && storage.state === 'ready';
@@ -1759,6 +1983,7 @@ async function checkHealth(): Promise<boolean> {
     renderStatusBanner();
     return true;
   } catch (error: any) {
+    if (error?.name === 'AbortError' || generation !== healthGeneration || healthController !== controller) return false;
     if (error?.status === 401) showAuth();
     else {
       state.connectionState = 'offline';
@@ -1768,6 +1993,8 @@ async function checkHealth(): Promise<boolean> {
       renderStatusBanner();
     }
     return false;
+  } finally {
+    if (healthController === controller) healthController = undefined;
   }
 }
 function handleError(error: any, showToast = true): void {
@@ -1819,7 +2046,7 @@ function bindEvents(): void {
     else if (action === 'clear-offline') clearOfflineQueue();
     else if (action === 'browse-drive') { state.view = 'drive'; state.path = ''; void refresh(); }
     else if (action === 'clear-search') { state.lastSearch = ''; state.searchFilters = {}; ($('#search') as HTMLInputElement).value = ''; state.view = 'drive'; void refresh(); }
-    else if (action === 'clear-activity-filter') { delete state.searchFilters.activity; void renderActivity(); }
+    else if (action === 'clear-activity-filter') { delete state.searchFilters.activity; void refresh(); }
     else if (action === 'open-sync') { state.view = 'sync'; state.path = ''; void refresh(); }
     else if (['rename', 'move', 'copy', 'delete', 'restore'].includes(action ?? '')) void actionItems(action as 'rename' | 'move' | 'copy' | 'delete' | 'restore');
     else if (action === 'close-preview') closeDialog(previewDialog);
@@ -1890,9 +2117,27 @@ function bindEvents(): void {
   ($('#file-input') as HTMLInputElement).addEventListener('change', (event) => { const input = event.target as HTMLInputElement; if (input.files?.length) void uploadFiles(input.files); input.value = ''; });
   ($('#folder-input') as HTMLInputElement).addEventListener('change', (event) => { const input = event.target as HTMLInputElement; if (input.files?.length) void uploadFolder(input.files); input.value = ''; });
   const dropzone = $('#dropzone');
-  for (const kind of ['dragenter', 'dragover']) dropzone.addEventListener(kind, (event) => { event.preventDefault(); dropzone.classList.add('dragging'); });
-  for (const kind of ['dragleave', 'drop']) dropzone.addEventListener(kind, (event) => { event.preventDefault(); dropzone.classList.remove('dragging'); });
-  dropzone.addEventListener('drop', (event) => { const dataTransfer = (event as DragEvent).dataTransfer; if (dataTransfer) void uploadDropped(dataTransfer, state.path); });
+  let dropDepth = 0;
+  dropzone.addEventListener('dragenter', (event) => {
+    const dataTransfer = (event as DragEvent).dataTransfer;
+    if (!dataTransfer || !hasUploadPayload(dataTransfer)) return;
+    event.preventDefault(); dropDepth += 1; dropzone.classList.add('dragging');
+  });
+  dropzone.addEventListener('dragover', (event) => {
+    const dataTransfer = (event as DragEvent).dataTransfer;
+    if (!dataTransfer || !hasUploadPayload(dataTransfer)) return;
+    event.preventDefault(); dropzone.classList.add('dragging');
+  });
+  dropzone.addEventListener('dragleave', (event) => {
+    event.preventDefault();
+    dropDepth = Math.max(0, dropDepth - 1);
+    if (!dropDepth) dropzone.classList.remove('dragging');
+  });
+  dropzone.addEventListener('drop', (event) => {
+    event.preventDefault(); event.stopPropagation(); dropDepth = 0; dropzone.classList.remove('dragging');
+    const dataTransfer = (event as DragEvent).dataTransfer;
+    if (dataTransfer && hasUploadPayload(dataTransfer)) void uploadDropped(dataTransfer, state.path);
+  });
   $('#search').addEventListener('input', (event) => {
     const query = (event.target as HTMLInputElement).value.trim();
     window.clearTimeout(state.searchTimer);

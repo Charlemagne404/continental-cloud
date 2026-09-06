@@ -9,7 +9,7 @@ It is designed to bind to loopback and sit behind a Tailscale-only Caddy listene
 - Responsive PWA file manager: grid/list, breadcrumbs, nested folder uploads, drag-and-drop uploads, progress, cancellation/retry, search, recents, favorites, metadata, activity, dark/light appearance, and mobile navigation.
 - Direct disk storage with a private internal directory for SQLite metadata, chunk staging, thumbnails, historical versions, and trash.
 - Filesystem-backed create, rename, move, copy, download, trash/restore/permanent delete, image thumbnails, previews, and version restoration.
-- Chunked upload API that writes each request directly to a temporary disk file; incomplete data is never moved into `data/`.
+- Universal chunked upload API that treats file bytes as opaque, accepts unknown/empty/binary files, writes each request directly to a temporary disk file, and never exposes incomplete data in `data/`.
 - SQLite metadata and FTS search, with fast current-folder synchronization and an explicit full reconciliation command for external changes.
 - Indexed filter search, streamed folder `.tar` downloads, a durable sync change journal, version retention, and persistent maintenance-job history.
 - Continental Cloud Sync: selective live folder mappings, trusted-device records, resumable chunk transfers, version-preconditioned writes, conflict copies, offline queues, native folder watching, and conservative periodic reconciliation.
@@ -101,7 +101,7 @@ Use Caddy or `tailscale serve` to make the loopback service available exclusivel
 | `CLOUD_AUTH_TOKEN` | unset | Required unless explicitly using development-only disabled auth. |
 | `CLOUD_AUTH_DISABLED` | false | Development only; forbidden in production. |
 | `CLOUD_ALLOWED_ORIGIN` | unset | Optional explicit browser origin for mutations. |
-| `CLOUD_MAX_UPLOAD_BYTES` | 20 GiB | Maximum individual upload size. |
+| `CLOUD_MAX_UPLOAD_BYTES` | 4 TiB | Maximum individual upload size; raise or lower this to match the storage volume. |
 | `CLOUD_UPLOAD_CHUNK_BYTES` | 8 MiB | Disk-streamed browser upload chunk size. |
 | `CLOUD_VERSION_RETENTION` | 25 | Number of previous versions retained per file. |
 | `CLOUD_TRASH_RETENTION_DAYS` | 30 | Age at which `cloud cleanup` permanently removes Trash items. |
@@ -159,6 +159,8 @@ Responses use JSON, consistent error codes, UTC ISO timestamps, and opaque UUIDs
 ## Reliability model and current boundaries
 
 Filesystem and SQLite transactions cannot be one atomic transaction. Continental Cloud therefore writes uploads to `temp/`, only exposes them after a same-volume rename into `data/`, and retains overwritten bytes under `versions/`. The drive performs reconciliation to repair metadata drift after out-of-band changes or an interrupted operation. Keep periodic backups and test restoration—software cannot make an SMB/Wi-Fi disk reliable.
+
+Browser uploads have no file-type allowlist. A browser MIME value is treated as a preview hint and sanitized before it is stored or returned; unknown types remain downloadable as ordinary bytes. Uploads are sent in resumable chunks, retry transient network failures, limit browser concurrency to keep the NAS responsive, and preserve an interrupted session so a retry does not have to start from zero. The configured size limit is a safety ceiling, not a type restriction; the default is 4 TiB.
 
 Continental ID, multi-user authorization, sharing/public links, advanced media transcoding, cloud-only placeholders, block-level binary delta sync, and collaboration editing remain intentionally out of scope. Sync is deliberately a private, trusted-device feature: it uses the existing token/Tailscale boundary and never exposes the underlying NAS directly.
 

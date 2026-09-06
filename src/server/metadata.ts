@@ -1,11 +1,13 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdir } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { lstat, mkdir } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { type ActivityEvent, type ChangeEvent, type FileNode, type JobStatus, type SavedSearch, type SyncDevice, type SyncMapping, type SyncOperation, type SyncPairing, type SyncPolicy, type SyncProgress, type Tag, type UploadSession } from '../shared/types.js';
 import { normalizeSyncPolicy } from '../shared/sync-policy.js';
 import type { DiskEntry } from './storage.js';
 import { parentPath } from './paths.js';
+
+const TRASH_METADATA_PREFIX = '\u0001continental-trash';
 
 type NodeRow = {
   id: string; relative_path: string; parent_path: string; name: string; is_directory: number; mime_type: string | null;
@@ -25,6 +27,14 @@ export class MetadataDatabase {
 
   async open(): Promise<void> {
     await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
+    for (const suffix of ['', '-wal', '-shm']) {
+      try {
+        const info = await lstat(this.path + suffix);
+        if (info.isSymbolicLink() || !info.isFile()) throw new Error('Metadata database files must be regular files.');
+      } catch (error: unknown) {
+        if ((error as { code?: string }).code !== 'ENOENT') throw error;
+      }
+    }
     this.db = new DatabaseSync(this.path);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
     this.db.exec(`
@@ -46,7 +56,8 @@ export class MetadataDatabase {
       CREATE TABLE IF NOT EXISTS upload_sessions (
         id TEXT PRIMARY KEY, parent_path TEXT NOT NULL, name TEXT NOT NULL, mime_type TEXT, size INTEGER NOT NULL,
         chunk_size INTEGER NOT NULL, chunk_count INTEGER NOT NULL, received_chunks TEXT NOT NULL DEFAULT '[]',
-        status TEXT NOT NULL, created_at TEXT NOT NULL, temp_name TEXT NOT NULL, sync_context TEXT, result_node_id TEXT
+        status TEXT NOT NULL, created_at TEXT NOT NULL, temp_name TEXT NOT NULL, sync_context TEXT, result_node_id TEXT,
+        overwrite INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS activity (
         id TEXT PRIMARY KEY, action TEXT NOT NULL, node_id TEXT, path TEXT, detail TEXT, created_at TEXT NOT NULL
@@ -95,6 +106,7 @@ export class MetadataDatabase {
       'ALTER TABLE nodes ADD COLUMN revision INTEGER NOT NULL DEFAULT 1',
       'ALTER TABLE upload_sessions ADD COLUMN sync_context TEXT',
       'ALTER TABLE upload_sessions ADD COLUMN result_node_id TEXT',
+      'ALTER TABLE upload_sessions ADD COLUMN overwrite INTEGER NOT NULL DEFAULT 0',
       "ALTER TABLE change_journal ADD COLUMN operation TEXT NOT NULL DEFAULT 'modify'",
       'ALTER TABLE change_journal ADD COLUMN previous_path TEXT',
       'ALTER TABLE change_journal ADD COLUMN revision INTEGER',
@@ -103,6 +115,7 @@ export class MetadataDatabase {
       'ALTER TABLE sync_mappings ADD COLUMN policy TEXT NOT NULL DEFAULT \'{}\'',
       'ALTER TABLE sync_mappings ADD COLUMN progress TEXT',
     ]) { try { this.db.exec(statement); } catch (error: unknown) { if (!String(error).includes('duplicate column name')) throw error; } }
+    this.migrateTrashPaths();
   }
 
   close(): void { this.db?.close(); }
@@ -200,15 +213,21 @@ export class MetadataDatabase {
   search(query: string, limit = 100, filters: { extension?: string; type?: string; tag?: string; favorite?: boolean; trashed?: boolean; minSize?: number; maxSize?: number; before?: string; after?: string; path?: string } = {}): FileNode[] {
     const terms = query.match(/[\p{L}\p{N}_]+/gu)?.slice(0, 12) ?? [];
     const where = this.searchWhere(filters);
-    if (!terms.length) return (this.db.prepare(`SELECT * FROM nodes WHERE ${where.sql} ORDER BY modified_at DESC LIMIT ?`).all(...where.params, limit) as NodeRow[]).map(node);
+    const expose = (rows: NodeRow[]): FileNode[] => rows.map((row) => {
+      const value = node(row);
+      if (!filters.trashed) return value;
+      const trash = this.db.prepare('SELECT original_path FROM trash_items WHERE node_id=?').get(row.id) as { original_path: string } | undefined;
+      return trash ? trashNode(value, trash.original_path) : value;
+    });
+    if (!terms.length) return expose(this.db.prepare(`SELECT * FROM nodes WHERE ${where.sql} ORDER BY modified_at DESC LIMIT ?`).all(...where.params, limit) as NodeRow[]);
     const expression = terms.map((term) => `${term.replaceAll('"', '')}*`).join(' AND ');
     const indexed = this.db.prepare(`SELECT n.* FROM files_fts f JOIN nodes n ON n.id=f.node_id WHERE files_fts MATCH ? AND ${where.sql} ORDER BY rank LIMIT ?`).all(expression, ...where.params, limit) as NodeRow[];
-    if (indexed.length) return indexed.map(node);
+    if (indexed.length) return expose(indexed);
     // FTS tokenizer differences should not make names undiscoverable. This fallback
     // is also useful for punctuation-heavy project names and remains parameterized.
     const termsSql = terms.map(() => '(name LIKE ? OR relative_path LIKE ?)').join(' AND ');
     const params = terms.flatMap((term) => [`%${term}%`, `%${term}%`]);
-    return (this.db.prepare(`SELECT * FROM nodes WHERE ${where.sql} AND ${termsSql} ORDER BY modified_at DESC LIMIT ?`).all(...where.params, ...params, limit) as NodeRow[]).map(node);
+    return expose(this.db.prepare(`SELECT * FROM nodes WHERE ${where.sql} AND ${termsSql} ORDER BY modified_at DESC LIMIT ?`).all(...where.params, ...params, limit) as NodeRow[]);
   }
   setFavorite(id: string, favorite: boolean): FileNode | undefined {
     this.db.prepare('UPDATE nodes SET favorite=?, modified_at=? WHERE id=? AND trashed_at IS NULL').run(Number(favorite), now(), id);
@@ -239,11 +258,20 @@ export class MetadataDatabase {
   }
   markTrashed(id: string, originalPath: string, storageKey: string): string {
     const itemId = randomUUID(); const deletedAt = now();
+    const target = this.getNode(id);
+    if (!target) throw new Error('Missing node.');
+    const tombstoneRoot = trashMetadataRoot(storageKey);
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      this.db.prepare('UPDATE nodes SET trashed_at=?,revision=revision + CASE WHEN id=? THEN 1 ELSE 0 END WHERE relative_path=? OR relative_path LIKE ?').run(deletedAt, id, originalPath, `${originalPath}/%`);
-      const target = this.getNode(id);
-      if (!target) throw new Error('Missing node.');
+      const rows = this.db.prepare('SELECT id,relative_path FROM nodes WHERE relative_path=? OR relative_path LIKE ? ORDER BY LENGTH(relative_path) ASC').all(originalPath, `${originalPath}/%`) as Array<{ id: string; relative_path: string }>;
+      for (const row of rows) {
+        const suffix = row.relative_path === originalPath ? '' : row.relative_path.slice(originalPath.length);
+        const next = `${tombstoneRoot}${suffix}`;
+        this.db.prepare('UPDATE nodes SET relative_path=?,parent_path=?,name=?,trashed_at=?,revision=revision + CASE WHEN id=? THEN 1 ELSE 0 END WHERE id=?')
+          .run(next, parentPath(next), basename(next), deletedAt, id, row.id);
+        const publicPath = `${originalPath}${suffix}`;
+        this.upsertFts(row.id, basename(publicPath), publicPath);
+      }
       this.db.prepare('INSERT INTO trash_items (id,node_id,storage_key,original_path,deleted_at,name,is_directory) VALUES (?,?,?,?,?,?,?)')
         .run(itemId, id, storageKey, originalPath, deletedAt, target.name, Number(target.isDirectory));
       this.db.exec('COMMIT');
@@ -252,33 +280,45 @@ export class MetadataDatabase {
   }
   listTrash(): Array<{ id: string; originalPath: string; deletedAt: string; node: FileNode }> {
     const rows = this.db.prepare(`SELECT t.id as trash_id,t.original_path,t.deleted_at,n.* FROM trash_items t JOIN nodes n ON n.id=t.node_id ORDER BY t.deleted_at DESC`).all() as Array<NodeRow & { trash_id: string; original_path: string; deleted_at: string }>;
-    return rows.map((row) => ({ id: row.trash_id, originalPath: row.original_path, deletedAt: row.deleted_at, node: node(row) }));
+    return rows.map((row) => ({ id: row.trash_id, originalPath: row.original_path, deletedAt: row.deleted_at, node: trashNode(node(row), row.original_path) }));
   }
   listTrashRecords(): Array<{ id: string; storageKey: string; originalPath: string; deletedAt: string; node: FileNode }> {
     const rows = this.db.prepare(`SELECT t.id as trash_id,t.storage_key,t.original_path,t.deleted_at,n.* FROM trash_items t JOIN nodes n ON n.id=t.node_id ORDER BY t.deleted_at DESC`).all() as Array<NodeRow & { trash_id: string; storage_key: string; original_path: string; deleted_at: string }>;
-    return rows.map((row) => ({ id: row.trash_id, storageKey: row.storage_key, originalPath: row.original_path, deletedAt: row.deleted_at, node: node(row) }));
+    return rows.map((row) => ({ id: row.trash_id, storageKey: row.storage_key, originalPath: row.original_path, deletedAt: row.deleted_at, node: trashNode(node(row), row.original_path) }));
   }
   expiredTrash(before: string): Array<{ id: string }> { return this.db.prepare('SELECT id FROM trash_items WHERE deleted_at < ? ORDER BY deleted_at ASC').all(before).map((row: any) => ({ id: row.id })); }
   getTrash(id: string): { id: string; storageKey: string; originalPath: string; node: FileNode } | undefined {
     const row = this.db.prepare(`SELECT t.id as trash_id,t.storage_key,t.original_path,n.* FROM trash_items t JOIN nodes n ON n.id=t.node_id WHERE t.id=?`).get(id) as (NodeRow & { trash_id: string; storage_key: string; original_path: string }) | undefined;
-    return row ? { id: row.trash_id, storageKey: row.storage_key, originalPath: row.original_path, node: node(row) } : undefined;
+    return row ? { id: row.trash_id, storageKey: row.storage_key, originalPath: row.original_path, node: trashNode(node(row), row.original_path) } : undefined;
   }
   restoreTrash(id: string, restoredPath: string): FileNode | undefined {
     const item = this.getTrash(id); if (!item) return undefined;
-    // Path rewrites use their own transaction. The filesystem move is deliberately
-    // reconciled on startup if a process dies between that move and this update.
-    this.movePrefix(item.node.id, item.originalPath, restoredPath);
-    this.db.prepare('UPDATE nodes SET trashed_at=NULL,revision=revision + CASE WHEN id=? THEN 1 ELSE 0 END WHERE relative_path=? OR relative_path LIKE ?').run(item.node.id, restoredPath, `${restoredPath}/%`);
-    this.db.prepare('DELETE FROM trash_items WHERE id=?').run(id);
+    const source = trashMetadataRoot(item.storageKey);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const rows = this.db.prepare('SELECT id,relative_path FROM nodes WHERE relative_path=? OR relative_path LIKE ? ORDER BY LENGTH(relative_path) ASC').all(source, `${source}/%`) as Array<{ id: string; relative_path: string }>;
+      if (!rows.length) throw new Error('Missing trashed node metadata.');
+      for (const row of rows) {
+        const suffix = row.relative_path === source ? '' : row.relative_path.slice(source.length);
+        const next = `${restoredPath}${suffix}`;
+        this.db.prepare('UPDATE nodes SET relative_path=?,parent_path=?,name=?,trashed_at=NULL,revision=revision + CASE WHEN id=? THEN 1 ELSE 0 END WHERE id=?')
+          .run(next, parentPath(next), basename(next), item.node.id, row.id);
+        this.upsertFts(row.id, basename(next), next);
+      }
+      this.db.prepare('DELETE FROM trash_items WHERE id=?').run(id);
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     return this.getNode(item.node.id);
   }
   removeTrash(id: string): { storageKey: string } | undefined {
     const item = this.getTrash(id); if (!item) return undefined;
+    const source = trashMetadataRoot(item.storageKey);
     this.db.exec('BEGIN IMMEDIATE');
     try {
+      const rows = this.db.prepare('SELECT id FROM nodes WHERE relative_path=? OR relative_path LIKE ?').all(source, `${source}/%`) as Array<{ id: string }>;
+      for (const row of rows) this.db.prepare('DELETE FROM files_fts WHERE node_id=?').run(row.id);
       this.db.prepare('DELETE FROM trash_items WHERE id=?').run(id);
-      this.deleteFtsForPath(item.originalPath, false);
-      this.db.prepare('DELETE FROM nodes WHERE relative_path=? OR relative_path LIKE ?').run(item.originalPath, `${item.originalPath}/%`);
+      this.db.prepare('DELETE FROM nodes WHERE relative_path=? OR relative_path LIKE ?').run(source, `${source}/%`);
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     return { storageKey: item.storageKey };
@@ -305,16 +345,53 @@ export class MetadataDatabase {
     return row ? { id: row.id, nodeId: row.node_id, storedPath: row.stored_path, originalName: row.original_name, mimeType: row.mime_type, size: Number(row.size), createdAt: row.created_at } : undefined;
   }
   createUpload(session: UploadSession, tempName: string): void {
-    this.db.prepare(`INSERT INTO upload_sessions (id,parent_path,name,mime_type,size,chunk_size,chunk_count,received_chunks,status,created_at,temp_name,sync_context,result_node_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(session.id, session.parentPath, session.name, session.mimeType, session.size, session.chunkSize, session.chunkCount, JSON.stringify([]), session.status, session.createdAt, tempName, session.sync ? JSON.stringify(session.sync) : null, null);
+    this.db.prepare(`INSERT INTO upload_sessions (id,parent_path,name,mime_type,size,chunk_size,chunk_count,received_chunks,status,created_at,temp_name,sync_context,result_node_id,overwrite) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(session.id, session.parentPath, session.name, session.mimeType, session.size, session.chunkSize, session.chunkCount, JSON.stringify([]), session.status, session.createdAt, tempName, session.sync ? JSON.stringify(session.sync) : null, null, Number(session.overwrite));
   }
   getUpload(id: string): (UploadSession & { tempName: string }) | undefined {
     const row = this.db.prepare('SELECT * FROM upload_sessions WHERE id=?').get(id) as any;
-    return row ? { id: row.id, parentPath: row.parent_path, name: row.name, mimeType: row.mime_type, size: row.size, chunkSize: row.chunk_size, chunkCount: row.chunk_count, receivedChunks: json<number[]>(row.received_chunks), status: row.status, createdAt: row.created_at, tempName: row.temp_name, sync: row.sync_context ? json(row.sync_context) : undefined, resultNodeId: row.result_node_id ?? undefined } : undefined;
+    return row ? { id: row.id, parentPath: row.parent_path, name: row.name, mimeType: row.mime_type, size: Number(row.size), overwrite: Boolean(row.overwrite), chunkSize: Number(row.chunk_size), chunkCount: Number(row.chunk_count), receivedChunks: json<number[]>(row.received_chunks), status: row.status, createdAt: row.created_at, tempName: row.temp_name, sync: row.sync_context ? json(row.sync_context) : undefined, resultNodeId: row.result_node_id ?? undefined } : undefined;
   }
   updateUploadChunks(id: string, receivedChunks: number[]): void { this.db.prepare('UPDATE upload_sessions SET received_chunks=? WHERE id=?').run(JSON.stringify(receivedChunks), id); }
   updateUploadStatus(id: string, status: UploadSession['status']): void { this.db.prepare('UPDATE upload_sessions SET status=? WHERE id=?').run(status, id); }
   completeUpload(id: string, nodeId: string): void { this.db.prepare("UPDATE upload_sessions SET status='complete',result_node_id=? WHERE id=?").run(nodeId, id); }
+  finalizeUpload(input: { uploadId: string; target: string; size: number; mimeType: string | null; checksum: string; existingNodeId?: string; action: string; detail: string | null; operation: SyncOperation; deviceId?: string }): FileNode {
+    this.db.exec('BEGIN IMMEDIATE');
+    let change: ChangeEvent | undefined;
+    try {
+      const timestamp = now();
+      const targetName = basename(input.target);
+      let node: FileNode;
+      if (input.existingNodeId) {
+        const result = this.db.prepare('UPDATE nodes SET size=?,mime_type=?,checksum=?,modified_at=?,revision=revision+1,trashed_at=NULL WHERE id=? AND relative_path=? AND trashed_at IS NULL')
+          .run(input.size, input.mimeType, input.checksum, timestamp, input.existingNodeId, input.target);
+        if (Number(result.changes) !== 1) throw new Error('UPLOAD_TARGET_CHANGED');
+        this.upsertFts(input.existingNodeId, targetName, input.target);
+        node = this.getNode(input.existingNodeId)!;
+      } else {
+        const id = randomUUID();
+        this.db.prepare(`INSERT INTO nodes (id,relative_path,parent_path,name,is_directory,mime_type,size,created_at,modified_at,checksum,revision,favorite,trashed_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,1,0,NULL)`).run(id, input.target, parentPath(input.target), targetName, 0, input.mimeType, input.size, timestamp, timestamp, input.checksum);
+        this.upsertFts(id, targetName, input.target);
+        node = this.getNode(id)!;
+      }
+      const upload = this.db.prepare("UPDATE upload_sessions SET status='complete',result_node_id=? WHERE id=? AND status='active'").run(node.id, input.uploadId);
+      if (Number(upload.changes) !== 1) throw new Error('UPLOAD_SESSION_CHANGED');
+      this.db.prepare('INSERT INTO activity (id,action,node_id,path,detail,created_at) VALUES (?,?,?,?,?,?)').run(randomUUID(), input.action, node.id, input.target, input.detail, timestamp);
+      const createdAt = now();
+      const result = this.db.prepare('INSERT INTO change_journal (action,operation,node_id,path,previous_path,revision,checksum,device_id,detail,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        .run(input.action, input.operation, node.id, input.target, null, node.revision, node.checksum, input.deviceId ?? null, input.detail, createdAt);
+      change = { sequence: Number(result.lastInsertRowid), action: input.action, operation: input.operation, nodeId: node.id, path: input.target, previousPath: null, revision: node.revision, checksum: node.checksum, deviceId: input.deviceId ?? null, detail: input.detail, createdAt };
+      this.db.exec('COMMIT');
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* preserve the original database error */ }
+      throw error;
+    }
+    if (change) {
+      try { this.changeListener?.(change); } catch { /* a notifier must not undo a committed upload */ }
+    }
+    return this.getNode(change!.nodeId!)!;
+  }
   findUploadByIdempotency(deviceId: string, key: string): UploadSession | undefined {
     const row = this.db.prepare("SELECT * FROM upload_sessions WHERE json_extract(sync_context, '$.deviceId')=? AND json_extract(sync_context, '$.idempotencyKey')=? AND status IN ('active','complete') ORDER BY created_at DESC LIMIT 1").get(deviceId, key) as any;
     return row ? this.getUpload(row.id) : undefined;
@@ -454,6 +531,28 @@ export class MetadataDatabase {
     const rows = this.db.prepare(`SELECT id FROM nodes WHERE (relative_path=? OR relative_path LIKE ?)${active}`).all(relativePath, `${relativePath}/%`) as Array<{ id: string }>;
     for (const row of rows) this.db.prepare('DELETE FROM files_fts WHERE node_id=?').run(row.id);
   }
+
+  private migrateTrashPaths(): void {
+    const rows = this.db.prepare('SELECT storage_key,original_path FROM trash_items ORDER BY deleted_at ASC').all() as Array<{ storage_key: string; original_path: string }>;
+    if (!rows.length) return;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const row of rows) {
+        const source = trashMetadataRoot(row.storage_key);
+        const existing = this.db.prepare('SELECT 1 FROM nodes WHERE relative_path=? AND trashed_at IS NOT NULL LIMIT 1').get(source);
+        const from = existing ? source : row.original_path;
+        const nodes = this.db.prepare('SELECT id,relative_path FROM nodes WHERE trashed_at IS NOT NULL AND (relative_path=? OR relative_path LIKE ?) ORDER BY LENGTH(relative_path) ASC').all(from, `${from}/%`) as Array<{ id: string; relative_path: string }>;
+        for (const item of nodes) {
+          const suffix = item.relative_path === from ? '' : item.relative_path.slice(from.length);
+          const next = `${source}${suffix}`;
+          if (!existing) this.db.prepare('UPDATE nodes SET relative_path=?,parent_path=?,name=? WHERE id=?').run(next, parentPath(next), basename(next), item.id);
+          const publicPath = `${row.original_path}${suffix}`;
+          this.upsertFts(item.id, basename(publicPath), publicPath);
+        }
+      }
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
 }
 
 function operationFor(action: string): SyncOperation {
@@ -479,6 +578,11 @@ function parseProgress(value: unknown): SyncProgress | null {
     const parsed = typeof value === 'string' ? JSON.parse(value) : value;
     return parsed && typeof parsed === 'object' ? { ...(parsed as object), excludedFolders: typeof (parsed as Partial<SyncProgress>).excludedFolders === 'number' ? (parsed as Partial<SyncProgress>).excludedFolders : 0 } as SyncProgress : null;
   } catch { return null; }
+}
+
+function trashMetadataRoot(storageKey: string): string { return `${TRASH_METADATA_PREFIX}/${storageKey}`; }
+function trashNode(value: FileNode, originalPath: string): FileNode {
+  return { ...value, relativePath: originalPath, parentPath: parentPath(originalPath), name: basename(originalPath) };
 }
 
 export function metadataPath(storageRoot: string): string { return join(storageRoot, '.continental', 'metadata.db'); }

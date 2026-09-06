@@ -6,6 +6,8 @@ import type { CloudConfig, StorageStatus } from '../shared/types.js';
 import { fail } from './errors.js';
 import { assertContained, joinRelative, normalizeRelativePath, parentPath, resolveExistingNoSymlink } from './paths.js';
 
+class StorageLayoutError extends Error {}
+
 export interface DiskEntry {
   relativePath: string;
   name: string;
@@ -38,25 +40,34 @@ export class Storage {
     }
     const rootStat = await lstat(this.config.storagePath);
     if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return this.setMisconfigured('CLOUD_STORAGE_PATH must be a real directory, not a symlink.');
+    try { await this.assertExistingLayout(); }
+    catch (error: unknown) { return error instanceof StorageLayoutError ? this.setMisconfigured(error.message) : this.setOffline('Storage layout cannot be inspected safely.'); }
     const idPath = join(this.internalRoot, 'storage-id');
+    try { await this.assertExistingFile(idPath); }
+    catch (error: unknown) { return error instanceof StorageLayoutError ? this.setMisconfigured(error.message) : this.setOffline('Cannot inspect the storage identity file safely.'); }
+    let storageId: string;
     try {
-      const storageId = (await readFile(idPath, 'utf8')).trim();
+      storageId = (await readFile(idPath, 'utf8')).trim();
       if (!storageId) return this.setMisconfigured('Storage identity file is empty.');
       if (this.config.expectedStorageId && storageId !== this.config.expectedStorageId) return this.setMisconfigured('Storage identity does not match CLOUD_STORAGE_ID.');
-      await this.assertLayout();
-      await this.probeWritable();
-      return this.setReady(storageId);
     } catch (error: unknown) {
       if ((error as { code?: string }).code !== 'ENOENT') return this.setOffline('Cannot read the storage identity file.');
       // Never make a new identity when a production mount is missing: an empty mountpoint is not blank storage.
       if (!this.config.allowStorageInitialization || this.config.expectedStorageId) return this.setOffline('Storage identity is missing; refusing to treat this as empty storage.');
-      await mkdir(this.internalRoot, { recursive: true, mode: 0o700 });
-      const storageId = randomUUID();
-      await writeFile(idPath, `${storageId}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-      await this.assertLayout();
-      await this.probeWritable();
-      return this.setReady(storageId);
+      try { await this.ensureLayout(); }
+      catch (error: unknown) { return error instanceof StorageLayoutError ? this.setMisconfigured(error.message) : this.setOffline('Storage layout cannot be prepared safely.'); }
+      storageId = randomUUID();
+      try { await writeFile(idPath, `${storageId}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' }); }
+      catch (writeError: unknown) {
+        if ((writeError as { code?: string }).code !== 'EEXIST') throw writeError;
+        storageId = (await readFile(idPath, 'utf8')).trim();
+        if (!storageId) return this.setMisconfigured('Storage identity file is empty.');
+      }
     }
+    try { await this.ensureLayout(); }
+    catch (error: unknown) { return error instanceof StorageLayoutError ? this.setMisconfigured(error.message) : this.setOffline('Storage layout cannot be prepared safely.'); }
+    await this.probeWritable();
+    return this.setReady(storageId);
   }
 
   async refresh(): Promise<StorageStatus> {
@@ -65,6 +76,8 @@ export class Storage {
     try {
       const root = await lstat(this.config.storagePath);
       if (root.isSymbolicLink() || !root.isDirectory()) return this.setMisconfigured('Storage root changed to a non-directory or symlink.');
+      await this.assertExistingLayout();
+      await this.assertExistingFile(idPath);
       const storageId = (await readFile(idPath, 'utf8')).trim();
       if (!storageId || (this.config.expectedStorageId && storageId !== this.config.expectedStorageId)) return this.setOffline('Storage identity is missing or does not match.');
       await access(this.dataRoot, constants.R_OK | constants.W_OK);
@@ -74,7 +87,8 @@ export class Storage {
       const freeBytes = Number(fs.bavail) * Number(fs.bsize);
       const detail = freeBytes < this.config.minFreeBytes ? `Free space is below the configured safety reserve (${this.config.minFreeBytes} bytes).` : undefined;
       return this.setReady(storageId, freeBytes, Number(fs.blocks) * Number(fs.bsize), performance.now() - started, detail);
-    } catch {
+    } catch (error: unknown) {
+      if (error instanceof StorageLayoutError) return this.setMisconfigured(error.message);
       return this.setOffline('Storage mount cannot be read safely. Writes are blocked.');
     }
   }
@@ -147,12 +161,63 @@ export class Storage {
     return createReadStream(this.pathForNew(normalizeRelativePath(relativePath)), { flags: 'r' });
   }
 
-  private async assertLayout(): Promise<void> {
-    await mkdir(this.dataRoot, { recursive: true, mode: 0o750 });
-    await mkdir(join(this.internalRoot, 'thumbnails'), { recursive: true, mode: 0o700 });
-    await mkdir(join(this.internalRoot, 'versions'), { recursive: true, mode: 0o700 });
-    await mkdir(join(this.internalRoot, 'temp'), { recursive: true, mode: 0o700 });
-    await mkdir(this.trashRoot, { recursive: true, mode: 0o700 });
+  private async ensureLayout(): Promise<void> {
+    await this.ensureDirectory(this.dataRoot, 0o750);
+    await this.ensureDirectory(this.internalRoot, 0o700);
+    await this.ensureDirectory(join(this.internalRoot, 'thumbnails'), 0o700);
+    await this.ensureDirectory(join(this.internalRoot, 'versions'), 0o700);
+    await this.ensureDirectory(join(this.internalRoot, 'temp'), 0o700);
+    await this.ensureDirectory(this.trashRoot, 0o700);
+    await this.assertExistingLayout();
+  }
+
+  private async ensureDirectory(directory: string, mode: number): Promise<void> {
+    try {
+      const existing = await lstat(directory);
+      if (existing.isSymbolicLink()) throw new StorageLayoutError('Storage layout contains a symlink; writes are blocked.');
+      if (!existing.isDirectory()) throw new StorageLayoutError('Storage layout contains a non-directory; writes are blocked.');
+      return;
+    } catch (error: unknown) {
+      if (error instanceof StorageLayoutError) throw error;
+      if ((error as { code?: string }).code !== 'ENOENT') throw error;
+    }
+    await mkdir(directory, { mode });
+    const created = await lstat(directory);
+    if (created.isSymbolicLink() || !created.isDirectory()) throw new StorageLayoutError('Storage layout contains a symlink or non-directory; writes are blocked.');
+  }
+
+  private async assertExistingLayout(): Promise<void> {
+    const directories = [
+      this.dataRoot,
+      this.internalRoot,
+      join(this.internalRoot, 'thumbnails'),
+      join(this.internalRoot, 'versions'),
+      join(this.internalRoot, 'temp'),
+      this.trashRoot,
+    ];
+    for (const directory of directories) {
+      try {
+        const info = await lstat(directory);
+        if (info.isSymbolicLink()) throw new StorageLayoutError('Storage layout contains a symlink; writes are blocked.');
+        if (!info.isDirectory()) throw new StorageLayoutError('Storage layout contains a non-directory; writes are blocked.');
+      } catch (error: unknown) {
+        if (error instanceof StorageLayoutError) throw error;
+        if ((error as { code?: string }).code === 'ENOENT') continue;
+        throw error;
+      }
+    }
+  }
+
+  private async assertExistingFile(file: string): Promise<void> {
+    try {
+      const info = await lstat(file);
+      if (info.isSymbolicLink()) throw new StorageLayoutError('Storage identity must be a regular file; writes are blocked.');
+      if (!info.isFile()) throw new StorageLayoutError('Storage identity must be a regular file; writes are blocked.');
+    } catch (error: unknown) {
+      if (error instanceof StorageLayoutError) throw error;
+      if ((error as { code?: string }).code === 'ENOENT') return;
+      throw error;
+    }
   }
 
   /** A real write catches SMB read-only mounts that access(W_OK) can miss. */

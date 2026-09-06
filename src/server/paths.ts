@@ -3,6 +3,7 @@ import { join, relative, sep } from 'node:path';
 import { fail } from './errors.js';
 
 const RESERVED = new Set(['.continental', '.trash']);
+export const MAX_PATH_COMPONENT_BYTES = 255;
 
 /** Normalizes an application-relative POSIX path and rejects every escape form. */
 export function normalizeRelativePath(input: unknown, { allowEmpty = true }: { allowEmpty?: boolean } = {}): string {
@@ -14,12 +15,15 @@ export function normalizeRelativePath(input: unknown, { allowEmpty = true }: { a
     throw fail.badRequest('A name is required.');
   }
   const parts = input.split('/');
+  const normalizedParts: string[] = [];
   for (const part of parts) {
     if (!part || part === '.' || part === '..') throw fail.badRequest('The path contains an invalid segment.');
-    if (RESERVED.has(part)) throw fail.forbidden('Internal storage paths are never accessible through the API.');
-    if (part.length > 255) throw fail.badRequest('A file name cannot exceed 255 characters.');
+    const normalized = part.normalize('NFC');
+    if (RESERVED.has(normalized.toLowerCase())) throw fail.forbidden('Internal storage paths are never accessible through the API.');
+    if (Buffer.byteLength(normalized, 'utf8') > MAX_PATH_COMPONENT_BYTES) throw fail.badRequest('A file name cannot exceed 255 UTF-8 bytes.');
+    normalizedParts.push(normalized);
   }
-  return parts.join('/');
+  return normalizedParts.join('/');
 }
 
 export function normalizeFileName(input: unknown): string {
