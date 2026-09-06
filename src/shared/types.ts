@@ -132,7 +132,8 @@ export interface SyncPolicy {
 export const DEFAULT_PROJECT_SYNC_EXCLUDES = [
   '.DS_Store', 'Thumbs.db',
   'node_modules/**', '.venv/**', 'venv/**',
-  'dist/**', 'build/**', '.next/**', '.nuxt/**', '.turbo/**',
+  'dist/**', 'build/**', 'bin/**', 'obj/**', '.vs/**', 'packages/**',
+  '.next/**', '.nuxt/**', '.turbo/**',
   'coverage/**', 'target/**', '.cache/**', '.parcel-cache/**', '__pycache__/**',
   '*.swp', '*.swo', '*.tmp',
 ];

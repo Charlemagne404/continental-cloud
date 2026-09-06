@@ -56,6 +56,9 @@ test('project policy excludes generated trees while exact policy includes every 
   const project = defaultSyncPolicy();
   assert.equal(syncPathExcluded('node_modules/library/index.js', project), true);
   assert.equal(syncPathExcluded('packages/app/dist/bundle.js', project), true);
+  assert.equal(syncPathExcluded('bin/Debug/net8.0/App.dll', project), true);
+  assert.equal(syncPathExcluded('obj/Debug/net8.0/App.csproj.FileListAbsolute.txt', project), true);
+  assert.equal(syncPathExcluded('.vs/CloudApp/v17/.suo', project), true);
   assert.equal(syncPathExcluded('src/index.ts', project), false);
   assert.equal(syncPathExcluded('notes/tmp.txt', project), false);
   assert.deepEqual(normalizeSyncPolicy({ preset: 'exact', exclude: ['node_modules/**'] }), { preset: 'exact', exclude: [] });

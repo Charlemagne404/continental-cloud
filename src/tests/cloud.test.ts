@@ -79,6 +79,25 @@ test('uploads are opaque and accept empty files, unknown extensions, and arbitra
   assert.deepEqual(new Uint8Array(await content.arrayBuffer()), bytes);
 });
 
+test('source, project, archive, and extensionless files retain their exact bytes', async () => {
+  const run = await boot();
+  const files = [
+    { name: 'Program.cs', bytes: Uint8Array.from([0xef, 0xbb, 0xbf, 0x2f, 0x2f, 0x20, 0x03, 0x00]), mimeType: 'text/x-csharp' },
+    { name: 'CloudApp.csproj', bytes: Uint8Array.from([0x3c, 0x50, 0x72, 0x6f, 0x6a, 0x65, 0x63, 0x74, 0x3e, 0x00]), mimeType: 'application/xml' },
+    { name: 'library.dll', bytes: Uint8Array.from([0x4d, 0x5a, 0x00, 0xff, 0x01, 0x80]), mimeType: 'application/octet-stream' },
+    { name: 'release.bin', bytes: Uint8Array.from([0x00, 0x7f, 0x80, 0xff]), mimeType: 'application/octet-stream' },
+    { name: 'archive.7z', bytes: Uint8Array.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]), mimeType: 'application/x-7z-compressed' },
+  ];
+  for (const file of files) {
+    const node = await uploadBytes(run, file.name, file.bytes);
+    assert.equal(node.mimeType, file.mimeType);
+    assert.deepEqual(new Uint8Array(await readFile(join(run.root, 'storage', 'data', file.name))), file.bytes);
+    const downloaded = await fetch(`${run.base}/api/files/${node.id}/download`, { headers: { 'X-Continental-Token': run.token } });
+    assert.equal(downloaded.status, 200);
+    assert.deepEqual(new Uint8Array(await downloaded.arrayBuffer()), file.bytes);
+  }
+});
+
 test('interrupted chunks remain resumable and a late collision never overwrites the first upload', async () => {
   const run = await boot();
   const bytes = Uint8Array.from([1, 2, 3, 4, 5]);

@@ -1,5 +1,6 @@
 import { dedupeUploadFolders, dedupeUploadPlans, droppedSelection, normalizeUploadPath, toUploadPlans, uploadParent, validateUploadSelection } from './upload-selection.js';
 import type { UploadPlan } from './upload-selection.js';
+import { browserUuid } from './uuid.js';
 
 type FileItem = {
   id: string;
@@ -1025,7 +1026,7 @@ async function addMappingForDevice(deviceId: string): Promise<void> {
   const localPath = prompt('Local folder path');
   if (!localPath) return;
   const exact = confirm('Use Exact mirror? Choose Cancel for the Coding project profile, which skips dependencies and generated files.');
-  try { await api.json('/sync/devices/' + deviceId + '/mappings', 'POST', { id: crypto.randomUUID(), cloudPath, localPath, policy: { preset: exact ? 'exact' : 'project' } }); toast('Folder mapping added.'); await refresh(); }
+  try { await api.json('/sync/devices/' + deviceId + '/mappings', 'POST', { id: browserUuid(), cloudPath, localPath, policy: { preset: exact ? 'exact' : 'project' } }); toast('Folder mapping added.'); await refresh(); }
   catch (error) { handleError(error); }
 }
 async function editMapping(deviceId: string, mapping: SyncMapping): Promise<void> {
@@ -1380,7 +1381,7 @@ async function uploadFilesAt(plans: UploadPlan[], parentPath: string, replace = 
     validateUploadSelection(safePlans, safeFolders);
     await ensureUploadFolders(safePlans, parentPath, safeFolders);
     if (!safePlans.length && safeFolders.length) await refresh();
-    state.uploads.push(...safePlans.map((plan): UploadRecord => ({ localId: crypto.randomUUID(), file: plan.file, relativePath: plan.relativePath, parentPath: uploadJoin(parentPath, uploadParent(plan.relativePath)), replace, progress: 0, state: 'queued' })));
+    state.uploads.push(...safePlans.map((plan): UploadRecord => ({ localId: browserUuid(), file: plan.file, relativePath: plan.relativePath, parentPath: uploadJoin(parentPath, uploadParent(plan.relativePath)), replace, progress: 0, state: 'queued' })));
     renderUploads();
     pumpUploads();
     const uploaded = safePlans.length ? safePlans.length + ' file' + (safePlans.length === 1 ? '' : 's') + ' queued for upload.' : '';
